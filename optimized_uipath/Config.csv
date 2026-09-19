@@ -1,0 +1,27 @@
+﻿Name,Value,说明
+InputFolder,D:\WorkBuddy-WorkSpace\invoice-automation\invoices_input,发票收件箱：机器人扫描这个目录
+OutputFolder,D:\WorkBuddy-WorkSpace\invoice-automation\optimized_uipath\output,输出目录：台账 / 报告 / 待复核清单都写在这里
+ProcessedFolder,D:\WorkBuddy-WorkSpace\invoice-automation\optimized_uipath\output\_processed,处理完成的原件归档目录（MoveFile=True 时使用）
+FailedFolder,D:\WorkBuddy-WorkSpace\invoice-automation\optimized_uipath\output\_failed,处理失败的原件隔离目录，供人工排查
+LedgerFile,发票台账.xlsx,台账文件名（放在 OutputFolder 下）
+ReportFile,处理报告.html,HTML 报告文件名
+ReviewFile,待复核.csv,低置信度/待人工录入清单，人工只看这一个文件
+AuditFile,审计轨迹.jsonl,每张票一行 JSON：提取器、质量分、逐字段置信度与证据
+MaxRetryNumber,2,单张发票的系统异常重试次数（REFramework 的 MaxRetryNumber）
+MoveFile,False,True = 处理完把原件移到 ProcessedFolder；False = 原地保留
+SendEmailOnFailure,False,True = 批次结束有问题时发邮件（需在 Orchestrator 配 Asset）
+AlertEmail,,告警收件人（SendEmailOnFailure=True 时必填）
+MinTextChars,20,PDF 文本层少于这么多字符视为扫描件，转 OCR
+TextQualityMin,0.55,文本质量评分低于此值 → 升级提取方式（换 OCR / 调参数重试）
+OcrEnabled,True,是否允许调用 OCR（Document Understanding / Read PDF With OCR）
+OcrEngine,UiPathDocumentOCR,Document Understanding 的 OCR 引擎名
+MinConfidence,0.75,记录级加权置信度阈值，低于此值进「待复核」
+MinCriticalConfidence,0.5,号码/日期/价税合计任一项低于此值 → 待复核
+BalanceTolerance,0.02,|金额+税额-价税合计| 容差
+RateRelTolerance,0.02,|税额-金额×税率| 相对容差
+RateAbsFloor,0.05,上面那条的绝对下限容差
+VendorSimilarity,0.9,购销方名称相似度告警阈值
+OnDuplicate,skip,skip=不入账 | mark=入账但标注重复
+ReviewQueue,InvoiceReview,Orchestrator 队列名：低置信度发票进这里做人工复核
+UseOrchestratorQueue,False,True = 用 Orchestrator 队列做事务源（推荐生产）；False = 直接遍历文件夹（首次跑通更方便）
+QueueName,InvoiceQueue,UseOrchestratorQueue=True 时使用的事务队列名

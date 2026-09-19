@@ -1,0 +1,122 @@
+{
+  "Version": "1.0",
+  "Groups": [
+    {
+      "Name": "财务票据",
+      "Categories": [
+        {
+          "Name": "中国大陆增值税发票",
+          "DocumentTypes": [
+            {
+              "Name": "数电发票(普通发票)",
+              "Description": "电子发票（普通发票）· 20 位发票号码 · 无发票代码",
+              "Fields": [
+                { "Name": "发票号码", "Type": "Text", "Description": "20 位纯数字" },
+                { "Name": "发票代码", "Type": "Text", "Description": "数电票通常为空" },
+                { "Name": "开票日期", "Type": "Date", "Description": "YYYY-MM-DD" },
+                { "Name": "购买方名称", "Type": "Text" },
+                { "Name": "购买方税号", "Type": "Text", "Description": "15/17/18/20 位，18 位含校验位" },
+                { "Name": "销售方名称", "Type": "Text" },
+                { "Name": "销售方税号", "Type": "Text" },
+                { "Name": "金额(不含税)", "Type": "Number", "Description": "两位小数" },
+                { "Name": "税额", "Type": "Number", "Description": "两位小数" },
+                { "Name": "价税合计", "Type": "Number", "Description": "两位小数" },
+                { "Name": "税率/征收率", "Type": "Text", "Description": "如 6% / 13% / 免税" },
+                { "Name": "主要项目或货物名称", "Type": "Text", "Description": "*类别*名称 形式" },
+                { "Name": "开票人", "Type": "Text" },
+                {
+                  "Name": "货物明细",
+                  "Type": "Table",
+                  "Columns": [
+                    { "Name": "项目名称", "Type": "Text" },
+                    { "Name": "规格型号", "Type": "Text" },
+                    { "Name": "单位", "Type": "Text" },
+                    { "Name": "数量", "Type": "Number" },
+                    { "Name": "单价", "Type": "Number" },
+                    { "Name": "金额", "Type": "Number" },
+                    { "Name": "税率", "Type": "Text" },
+                    { "Name": "税额", "Type": "Number" }
+                  ]
+                }
+              ]
+            },
+            {
+              "Name": "增值税专用发票",
+              "Description": "纸质/电子专用发票 · 12 位代码 + 8 位号码",
+              "Fields": [
+                { "Name": "发票代码", "Type": "Text", "Description": "12 位，首位 0，第 11-12 位票种码 13" },
+                { "Name": "发票号码", "Type": "Text", "Description": "8 位" },
+                { "Name": "开票日期", "Type": "Date" },
+                { "Name": "购买方名称", "Type": "Text" },
+                { "Name": "购买方税号", "Type": "Text" },
+                { "Name": "销售方名称", "Type": "Text" },
+                { "Name": "销售方税号", "Type": "Text" },
+                { "Name": "金额(不含税)", "Type": "Number" },
+                { "Name": "税额", "Type": "Number" },
+                { "Name": "价税合计", "Type": "Number" },
+                { "Name": "税率/征收率", "Type": "Text" },
+                {
+                  "Name": "货物明细",
+                  "Type": "Table",
+                  "Columns": [
+                    { "Name": "项目名称", "Type": "Text" },
+                    { "Name": "数量", "Type": "Number" },
+                    { "Name": "单价", "Type": "Number" },
+                    { "Name": "金额", "Type": "Number" },
+                    { "Name": "税率", "Type": "Text" },
+                    { "Name": "税额", "Type": "Number" }
+                  ]
+                }
+              ]
+            },
+            {
+              "Name": "电子普通发票(老版)",
+              "Description": "12 位代码 + 8 位号码 + 20 位校验码",
+              "Fields": [
+                { "Name": "发票代码", "Type": "Text" },
+                { "Name": "发票号码", "Type": "Text" },
+                { "Name": "校验码", "Type": "Text", "Description": "15-25 位，老版电子票特有" },
+                { "Name": "开票日期", "Type": "Date" },
+                { "Name": "购买方名称", "Type": "Text" },
+                { "Name": "销售方名称", "Type": "Text" },
+                { "Name": "金额(不含税)", "Type": "Number" },
+                { "Name": "税额", "Type": "Number" },
+                { "Name": "价税合计", "Type": "Number" },
+                { "Name": "税率/征收率", "Type": "Text" }
+              ]
+            }
+          ]
+        },
+        {
+          "Name": "国际商务发票",
+          "DocumentTypes": [
+            {
+              "Name": "INVOICE",
+              "Description": "英文/中英混排商务发票（专业发票 / 代理发票 / 估算发票 / 条款发票 / 简式发票 / 演讲者发票）",
+              "Fields": [
+                { "Name": "InvoiceNumber", "Type": "Text" },
+                { "Name": "InvoiceDate", "Type": "Date" },
+                { "Name": "BillTo", "Type": "Text" },
+                { "Name": "VendorName", "Type": "Text" },
+                { "Name": "Subtotal", "Type": "Number" },
+                { "Name": "TaxAmount", "Type": "Number" },
+                { "Name": "TotalDue", "Type": "Number" },
+                { "Name": "Currency", "Type": "Text" },
+                {
+                  "Name": "LineItems",
+                  "Type": "Table",
+                  "Columns": [
+                    { "Name": "Description", "Type": "Text" },
+                    { "Name": "Quantity", "Type": "Number" },
+                    { "Name": "UnitPrice", "Type": "Number" },
+                    { "Name": "Amount", "Type": "Number" }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

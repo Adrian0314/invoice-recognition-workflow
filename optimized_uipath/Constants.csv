@@ -1,0 +1,10 @@
+﻿Name,Value,说明
+OK,正常,校验全部通过
+WARN,存在提示,有警告或提示，建议复核
+ERROR,异常,存在严重问题，需人工处理
+REVIEW,待复核,置信度不足，需人工确认
+TODO,待人工录入,图片/扫描件无法自动识别
+DUP,重复未入账,重复发票已阻止重复入账
+SheetDetail,发票明细,台账 sheet 名
+SheetIssue,异常记录,异常清单 sheet 名
+SheetSummary,汇总统计,统计 sheet 名

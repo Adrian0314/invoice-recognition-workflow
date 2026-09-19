@@ -1,0 +1,16 @@
+# 依赖清单
+# 安装：pip install -r requirements.txt
+PyMuPDF>=1.24      # PDF 读取（文本层提取 + 扫描件栅格化）
+openpyxl>=3.1      # Excel 台账读写与样式
+Pillow>=10.0       # 图片处理（OCR 前处理、样本生成）
+
+# —— 以下为可选项，仅当需要识别「图片 / 扫描件 PDF」时安装 ——
+# 推荐组合（纯 pip、免编译，本机实测可用）：
+#   pip install rapidocr "onnxruntime==1.20.1"
+#
+# 关于 onnxruntime 版本：最新版 1.30 在 Windows 10.0.17763 上 import 即原生崩溃
+# （0xC0000005 访问违例），1.20.1 实测正常。换机器可先试最新版，崩了再降级。
+#
+# 备选：
+#   PaddleOCR  : pip install paddleocr paddlepaddle   # 老 Python / Windows 上极难装成
+#   Tesseract  : 先装 Tesseract-OCR 主程序（勾选 chi_sim），再 pip install pytesseract

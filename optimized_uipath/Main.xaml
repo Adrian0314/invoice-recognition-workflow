@@ -1,0 +1,129 @@
+<Activity mc:Ignorable="sap sap2010" x:Class="Main"
+  xmlns="http://schemas.microsoft.com/netfx/2009/xaml/activities"
+  xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+  xmlns:s="clr-namespace:System;assembly=mscorlib"
+  xmlns:sap="http://schemas.microsoft.com/netfx/2009/xaml/activities/presentation"
+  xmlns:sap2010="http://schemas.microsoft.com/netfx/2010/xaml/activities/presentation"
+  xmlns:scg="clr-namespace:System.Collections.Generic;assembly=mscorlib"
+  xmlns:sd="clr-namespace:System.Data;assembly=System.Data"
+  xmlns:ui="http://schemas.uipath.com/workflow/activities"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+<Sequence DisplayName="Main · 发票自动化主流程" sap2010:WorkflowViewState.IdRef="Sequence_Main">
+  <Sequence.Variables>
+    <Variable x:TypeArguments="scg:Dictionary(x:String, x:Object)" Name="Config" />
+    <Variable x:TypeArguments="sd:DataTable" Name="dt_Config" />
+    <Variable x:TypeArguments="sd:DataTable" Name="dt_Ledger" />
+    <Variable x:TypeArguments="sd:DataTable" Name="dt_Issues" />
+    <Variable x:TypeArguments="scg:List(x:String)" Name="list_Files" />
+    <Variable x:TypeArguments="x:String" Name="str_InputFolder" />
+    <Variable x:TypeArguments="x:String" Name="str_OutputFolder" />
+    <Variable x:TypeArguments="x:String" Name="str_LedgerPath" />
+    <Variable x:TypeArguments="x:String" Name="str_ConfigPath" />
+    <Variable x:TypeArguments="x:String" Name="str_TransactionItem" />
+    <Variable x:TypeArguments="x:Int32" Name="int_Done" Default="0" />
+    <Variable x:TypeArguments="x:Int32" Name="int_Failed" Default="0" />
+    <Variable x:TypeArguments="x:Int32" Name="int_Retries" Default="0" />
+  </Sequence.Variables>
+  <ui:LogMessage Level="Info" DisplayName="日志·启动" Message="[&quot;发票自动化 v2（UiPath 版）启动 · 事务数据源 = 文件队列&quot;]" />
+  <Sequence DisplayName="阶段1·Initialization（读配置 / 扫目录 / 建表）">
+    <Assign DisplayName="定位 Config.xlsx"><Assign.To><OutArgument x:TypeArguments="x:String">[str_ConfigPath]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="x:String">[Path.Combine(Environment.CurrentDirectory, "Config.xlsx")]</InArgument></Assign.Value></Assign>
+    <ui:ReadRange AddHeaders="True" DataTable="[dt_Config]" Range="A1" SheetName="Settings" WorkbookPath="[str_ConfigPath]" DisplayName="读取 Config.xlsx / Settings" />
+<ui:InvokeCode Code="&#xA;' 把 Config.xlsx 读出来的两列表格转成字典&#xA;Config = New Dictionary(Of String, Object)()&#xA;For Each r As DataRow In dt_Config.Rows&#xA;    Dim k As String = If(r(&quot;Name&quot;) Is Nothing, &quot;&quot;, r(&quot;Name&quot;).ToString().Trim())&#xA;    If k = &quot;&quot; Then Continue For&#xA;    Config(k) = If(r(&quot;Value&quot;) Is Nothing, &quot;&quot;, r(&quot;Value&quot;).ToString())&#xA;Next&#xA;Console.WriteLine(&quot;[Init] 配置项 &quot; &amp; Config.Count.ToString() &amp; &quot; 条&quot;)&#xA;" Language="VisualBasic" DisplayName="构建配置字典">
+  <ui:InvokeCode.Arguments>
+    <InArgument x:TypeArguments="sd:DataTable" x:Key="dt_Config">[dt_Config]</InArgument>
+    <OutArgument x:TypeArguments="scg:Dictionary(x:String, x:Object)" x:Key="Config">[Config]</OutArgument>
+  </ui:InvokeCode.Arguments>
+</ui:InvokeCode>
+    <Assign DisplayName="取出路径参数"><Assign.To><OutArgument x:TypeArguments="x:String">[str_InputFolder]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="x:String">[Config("InputFolder").ToString]</InArgument></Assign.Value></Assign>
+    <Assign DisplayName="取出输出目录"><Assign.To><OutArgument x:TypeArguments="x:String">[str_OutputFolder]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="x:String">[Config("OutputFolder").ToString]</InArgument></Assign.Value></Assign>
+    <Assign DisplayName="拼出台账路径"><Assign.To><OutArgument x:TypeArguments="x:String">[str_LedgerPath]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="x:String">[Path.Combine(str_OutputFolder, Config("LedgerFile").ToString)]</InArgument></Assign.Value></Assign>
+    <If DisplayName="创建输出目录" Condition="[Not Directory.Exists(str_OutputFolder)]"><If.Then><Sequence><Assign DisplayName="建目录"><Assign.To><OutArgument x:TypeArguments="x:String">[str_OutputFolder]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="x:String">[Directory.CreateDirectory(str_OutputFolder).FullName]</InArgument></Assign.Value></Assign></Sequence></If.Then></If>
+<ui:InvokeCode Code="&#xA;' 建三张空表（列名与 Python 版台账完全一致，两个版本可交替使用同一批数据）&#xA;Dim MakeTable As Func(Of String(), DataTable) =&#xA;    Function(cols As String())&#xA;        Dim t As New DataTable()&#xA;        For Each c As String In cols&#xA;            t.Columns.Add(c, GetType(String))&#xA;        Next&#xA;        Return t&#xA;    End Function&#xA;&#xA;Dim detailCols As String() = {&quot;序号&quot;, &quot;源文件名&quot;, &quot;发票类型&quot;, &quot;发票代码&quot;, &quot;发票号码&quot;, &quot;开票日期&quot;,&#xA;    &quot;购买方名称&quot;, &quot;购买方税号&quot;, &quot;销售方名称&quot;, &quot;销售方税号&quot;, &quot;金额(不含税)&quot;, &quot;税额&quot;, &quot;价税合计&quot;,&#xA;    &quot;税率/征收率&quot;, &quot;主要项目/货物名称&quot;, &quot;校验码&quot;, &quot;开票人&quot;, &quot;识别置信度&quot;, &quot;提取方式&quot;,&#xA;    &quot;处理状态&quot;, &quot;异常/提示说明&quot;, &quot;处理时间&quot;, &quot;文件指纹&quot;}&#xA;Dim issueCols As String() = {&quot;序号&quot;, &quot;源文件名&quot;, &quot;发票号码&quot;, &quot;问题级别&quot;, &quot;涉及字段&quot;,&#xA;    &quot;问题描述&quot;, &quot;建议处理&quot;, &quot;发生时间&quot;}&#xA;&#xA;dt_Ledger = MakeTable(detailCols)&#xA;dt_Issues = MakeTable(issueCols)&#xA;For Each c As String In {&quot;金额(不含税)&quot;, &quot;税额&quot;, &quot;价税合计&quot;}&#xA;    dt_Ledger.Columns(c).DataType = GetType(Double)&#xA;Next&#xA;Console.WriteLine(&quot;[Init] 台账空表已建：明细 &quot; &amp; dt_Ledger.Columns.Count.ToString() &amp;&#xA;                  &quot; 列 / 异常 &quot; &amp; dt_Issues.Columns.Count.ToString() &amp; &quot; 列&quot;)&#xA;" Language="VisualBasic" DisplayName="建台账空表（明细/异常）">
+  <ui:InvokeCode.Arguments>
+    <OutArgument x:TypeArguments="sd:DataTable" x:Key="dt_Ledger">[dt_Ledger]</OutArgument>
+    <OutArgument x:TypeArguments="sd:DataTable" x:Key="dt_Issues">[dt_Issues]</OutArgument>
+  </ui:InvokeCode.Arguments>
+</ui:InvokeCode>
+<ui:InvokeCode Code="&#xA;' 扫描收件箱：只取受支持的扩展名，按修改时间排序；跳过 Excel 临时文件&#xA;list_Files = New List(Of String)()&#xA;If Not Directory.Exists(str_InputFolder) Then Directory.CreateDirectory(str_InputFolder) End If&#xA;Dim exts As String() = {&quot;.pdf&quot;, &quot;.png&quot;, &quot;.jpg&quot;, &quot;.jpeg&quot;, &quot;.bmp&quot;, &quot;.tif&quot;, &quot;.tiff&quot;, &quot;.webp&quot;}&#xA;Dim found As New List(Of String)()&#xA;For Each f As String In Directory.GetFiles(str_InputFolder, &quot;*.*&quot;, SearchOption.AllDirectories)&#xA;    Dim nm As String = Path.GetFileName(f)&#xA;    If nm.StartsWith(&quot;~$&quot;) Then Continue For&#xA;    If exts.Contains(Path.GetExtension(f).ToLower()) Then found.Add(f)&#xA;Next&#xA;list_Files = found.OrderBy(Function(x) File.GetLastWriteTime(x)).ToList()&#xA;Console.WriteLine(&quot;[Init] 收件箱 &quot; &amp; str_InputFolder &amp; &quot; 发现 &quot; &amp; list_Files.Count.ToString() &amp; &quot; 个待处理文件&quot;)&#xA;" Language="VisualBasic" DisplayName="扫描收件箱 → 事务列表">
+  <ui:InvokeCode.Arguments>
+    <InArgument x:TypeArguments="x:String" x:Key="str_InputFolder">[str_InputFolder]</InArgument>
+    <OutArgument x:TypeArguments="scg:List(x:String)" x:Key="list_Files">[list_Files]</OutArgument>
+  </ui:InvokeCode.Arguments>
+</ui:InvokeCode>
+    <If DisplayName="台账已存在则读回" Condition="[File.Exists(str_LedgerPath)]">
+      <If.Then><Sequence>
+        <ui:ReadRange AddHeaders="True" DataTable="[dt_Ledger]" Range="A1" SheetName="发票明细" WorkbookPath="[str_LedgerPath]" DisplayName="读回已有台账（建立去重索引）" />
+        <ui:LogMessage Level="Info" DisplayName="日志·读回台账" Message="[&quot;读回已有台账，行数=&quot; + dt_Ledger.Rows.Count.ToString]" />
+      </Sequence></If.Then>
+      <If.Else><ui:LogMessage Level="Info" DisplayName="日志·新台账" Message="[&quot;台账不存在，本次新建&quot;]" /></If.Else>
+    </If>
+  </Sequence>
+  <Sequence DisplayName="阶段2/3·GetTransactionData + ProcessTransaction">
+    <ui:LogMessage Level="Info" DisplayName="日志·开始处理" Message="[&quot;待处理 &quot; + list_Files.Count.ToString + &quot; 张发票&quot;]" />
+    <ForEach x:TypeArguments="x:String" DisplayName="逐张发票（事务循环）" Values="[list_Files]">
+      <ActivityAction x:TypeArguments="x:String">
+        <ActivityAction.Argument><DelegateInArgument x:TypeArguments="x:String" Name="item" /></ActivityAction.Argument>
+        <Sequence DisplayName="单张发票事务">
+          <Assign DisplayName="取事务项"><Assign.To><OutArgument x:TypeArguments="x:String">[str_TransactionItem]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="x:String">[item]</InArgument></Assign.Value></Assign>
+          <TryCatch DisplayName="处理事务（含 RetryScope 重试）">
+            <TryCatch.Try>
+              <ui:RetryScope DisplayName="RetryScope·系统异常重试" NumberOfRetries="[CInt(Config(&quot;MaxRetryNumber&quot;))]" RetryInterval="00:00:02">
+                <ui:RetryScope.ActivityBody><ActivityAction>
+                  <ui:InvokeWorkflowFile DisplayName="Process.xaml · 单张发票处理" WorkflowFileName="Process.xaml" UnSafe="False">
+                    <ui:InvokeWorkflowFile.Arguments>
+                      <InArgument x:TypeArguments="x:String" x:Key="in_FilePath">[str_TransactionItem]</InArgument>
+                      <InArgument x:TypeArguments="scg:Dictionary(x:String, x:Object)" x:Key="in_Config">[Config]</InArgument>
+                      <InArgument x:TypeArguments="sd:DataTable" x:Key="io_dt_Ledger">[dt_Ledger]</InArgument>
+                      <InArgument x:TypeArguments="sd:DataTable" x:Key="io_dt_Issues">[dt_Issues]</InArgument>
+                      <OutArgument x:TypeArguments="x:String" x:Key="out_Status">[out_Status]</OutArgument>
+                    </ui:InvokeWorkflowFile.Arguments>
+                  </ui:InvokeWorkflowFile>
+                </ActivityAction></ui:RetryScope.ActivityBody>
+              </ui:RetryScope>
+            </TryCatch.Try>
+            <TryCatch.Catches>
+              <Catch x:TypeArguments="ui:BusinessRuleException" DisplayName="业务异常·数据问题">
+                <ActivityAction x:TypeArguments="ui:BusinessRuleException">
+                  <Sequence>
+                    <ui:LogMessage Level="Warn" DisplayName="日志·业务异常" Message="[&quot;[业务异常] &quot; + Path.GetFileName(str_TransactionItem) + &quot; 已登记为异常，跳过不重试&quot;]" />
+                    <Assign DisplayName="失败计数+1"><Assign.To><OutArgument x:TypeArguments="x:Int32">[int_Failed]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="x:Int32">[int_Failed + 1]</InArgument></Assign.Value></Assign>
+                  </Sequence>
+                </ActivityAction>
+              </Catch>
+              <Catch x:TypeArguments="s:Exception" DisplayName="系统异常·重试耗尽后落到这里">
+                <ActivityAction x:TypeArguments="s:Exception">
+                  <Sequence>
+                    <ui:LogMessage Level="Error" DisplayName="日志·系统异常" Message="[&quot;[系统异常] &quot; + Path.GetFileName(str_TransactionItem) + &quot;：&quot; + exception.Message]" />
+                    <Assign DisplayName="重试计数+1"><Assign.To><OutArgument x:TypeArguments="x:Int32">[int_Retries]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="x:Int32">[int_Retries + 1]</InArgument></Assign.Value></Assign>
+                  </Sequence>
+                </ActivityAction>
+              </Catch>
+            </TryCatch.Catches>
+            <TryCatch.Finally><Sequence><ui:LogMessage Level="Trace" DisplayName="日志·事务结束" Message="[&quot;事务处理结束：&quot; + Path.GetFileName(str_TransactionItem)]" /></Sequence></TryCatch.Finally>
+          </TryCatch>
+          <Assign DisplayName="完成计数+1"><Assign.To><OutArgument x:TypeArguments="x:Int32">[int_Done]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="x:Int32">[int_Done + 1]</InArgument></Assign.Value></Assign>
+        </Sequence>
+      </ActivityAction>
+    </ForEach>
+  </Sequence>
+  <Sequence DisplayName="阶段4·End Process（落盘 / 报告 / 汇总）">
+    <ui:WriteRange AddHeaders="True" DataTable="[dt_Ledger]" Range="A1" SheetName="发票明细" WorkbookPath="[str_LedgerPath]" DisplayName="写台账·发票明细" />
+    <ui:WriteRange AddHeaders="True" DataTable="[dt_Issues]" Range="A1" SheetName="异常记录" WorkbookPath="[str_LedgerPath]" DisplayName="写台账·异常记录" />
+<ui:InvokeCode Code="&#xA;' 生成 HTML 报告 + 待复核清单 CSV（全部用标准库，不依赖 Excel）&#xA;Dim outDir As String = str_OutputFolder&#xA;If Not Directory.Exists(outDir) Then Directory.CreateDirectory(outDir) End If&#xA;&#xA;' ---- 待复核清单 ----&#xA;Dim reviewPath As String = Path.Combine(outDir, Config(&quot;ReviewFile&quot;).ToString())&#xA;Dim sb As New StringBuilder()&#xA;sb.AppendLine(&quot;源文件名,发票号码,开票日期,销售方名称,价税合计,识别置信度,处理状态,异常/提示说明&quot;)&#xA;Dim nReview As Integer = 0&#xA;For Each r As DataRow In dt_Ledger.Rows&#xA;    Dim st As String = If(r(&quot;处理状态&quot;) Is Nothing, &quot;&quot;, r(&quot;处理状态&quot;).ToString())&#xA;    If st = &quot;待复核&quot; OrElse st = &quot;待人工录入&quot; OrElse st = &quot;异常&quot; Then&#xA;        nReview += 1&#xA;        sb.AppendLine(String.Join(&quot;,&quot;, {&#xA;            r(&quot;源文件名&quot;).ToString(), r(&quot;发票号码&quot;).ToString(), r(&quot;开票日期&quot;).ToString(),&#xA;            r(&quot;销售方名称&quot;).ToString(), r(&quot;价税合计&quot;).ToString(), r(&quot;识别置信度&quot;).ToString(),&#xA;            st, r(&quot;异常/提示说明&quot;).ToString().Replace(&quot;,&quot;, &quot;，&quot;)}))&#xA;    End If&#xA;Next&#xA;File.WriteAllText(reviewPath, sb.ToString(), New UTF8Encoding(True))&#xA;&#xA;' ---- 汇总 ----&#xA;Dim nOK As Integer = 0, nWarn As Integer = 0, nErr As Integer = 0&#xA;Dim nRev As Integer = 0, nDup As Integer = 0, nTodo As Integer = 0&#xA;Dim sumTotal As Double = 0&#xA;For Each r As DataRow In dt_Ledger.Rows&#xA;    Dim st As String = If(r(&quot;处理状态&quot;) Is Nothing, &quot;&quot;, r(&quot;处理状态&quot;).ToString())&#xA;    Select Case st&#xA;        Case &quot;正常&quot; : nOK += 1&#xA;        Case &quot;存在提示&quot; : nWarn += 1&#xA;        Case &quot;异常&quot; : nErr += 1&#xA;        Case &quot;待复核&quot; : nRev += 1&#xA;        Case &quot;待人工录入&quot; : nTodo += 1&#xA;        Case &quot;重复未入账&quot; : nDup += 1&#xA;    End Select&#xA;    If st &lt;&gt; &quot;重复未入账&quot; AndAlso st &lt;&gt; &quot;待人工录入&quot; AndAlso r(&quot;价税合计&quot;) IsNot DBNull.Value Then&#xA;        sumTotal += CDbl(r(&quot;价税合计&quot;))&#xA;    End If&#xA;Next&#xA;&#xA;Dim html As New StringBuilder()&#xA;html.AppendLine(&quot;&lt;!DOCTYPE html&gt;&lt;html lang=&quot;&quot;zh-CN&quot;&quot;&gt;&lt;head&gt;&lt;meta charset=&quot;&quot;utf-8&quot;&quot;&gt;&quot;)&#xA;html.AppendLine(&quot;&lt;title&gt;UiPath 发票处理报告&lt;/title&gt;&quot;)&#xA;html.AppendLine(&quot;&lt;style&gt;body{font-family:'Microsoft YaHei',sans-serif;margin:24px;color:#1e2a3a;background:#f5f7fb}&quot; &amp;&#xA;                &quot;table{border-collapse:collapse;width:100%;font-size:12.5px;background:#fff}&quot; &amp;&#xA;                &quot;th{background:#1f4e79;color:#fff;padding:8px;text-align:left}&quot; &amp;&#xA;                &quot;td{padding:6px 8px;border-bottom:1px solid #e3e8f0}&quot; &amp;&#xA;                &quot;.err{color:#c0392b;font-weight:600}.rev{color:#5b4b8a;font-weight:600}&quot; &amp;&#xA;                &quot;.ok{color:#1e7145;font-weight:600}.warn{color:#b7791f;font-weight:600}&quot; &amp;&#xA;                &quot;.card{display:inline-block;background:#fff;border:1px solid #e3e8f0;border-radius:10px;&quot; &amp;&#xA;                &quot;padding:12px 18px;margin:6px 8px 6px 0}.v{font-size:22px;font-weight:700;color:#1f4e79}&lt;/style&gt;&quot;)&#xA;html.AppendLine(&quot;&lt;/head&gt;&lt;body&gt;&quot;)&#xA;html.AppendLine(&quot;&lt;h1 style=&quot;&quot;font-size:20px&quot;&quot;&gt;发票自动化处理报告 · UiPath 版&lt;/h1&gt;&quot;)&#xA;html.AppendLine(&quot;&lt;div&gt;生成时间 &quot; &amp; DateTime.Now.ToString(&quot;yyyy-MM-dd HH:mm:ss&quot;) &amp; &quot;　机器人批次 &quot; &amp; Now.Ticks.ToString() &amp; &quot;&lt;/div&gt;&quot;)&#xA;html.AppendLine(&quot;&lt;div&gt;&lt;div class=&quot;&quot;card&quot;&quot;&gt;&lt;div&gt;正常&lt;/div&gt;&lt;div class=&quot;&quot;v&quot;&quot;&gt;&quot; &amp; nOK.ToString() &amp; &quot;&lt;/div&gt;&lt;/div&gt;&quot; &amp;&#xA;                &quot;&lt;div class=&quot;&quot;card&quot;&quot;&gt;&lt;div&gt;异常&lt;/div&gt;&lt;div class=&quot;&quot;v&quot;&quot;&gt;&quot; &amp; nErr.ToString() &amp; &quot;&lt;/div&gt;&lt;/div&gt;&quot; &amp;&#xA;                &quot;&lt;div class=&quot;&quot;card&quot;&quot;&gt;&lt;div&gt;待复核&lt;/div&gt;&lt;div class=&quot;&quot;v&quot;&quot;&gt;&quot; &amp; nRev.ToString() &amp; &quot;&lt;/div&gt;&lt;/div&gt;&quot; &amp;&#xA;                &quot;&lt;div class=&quot;&quot;card&quot;&quot;&gt;&lt;div&gt;重复拦截&lt;/div&gt;&lt;div class=&quot;&quot;v&quot;&quot;&gt;&quot; &amp; nDup.ToString() &amp; &quot;&lt;/div&gt;&lt;/div&gt;&quot; &amp;&#xA;                &quot;&lt;div class=&quot;&quot;card&quot;&quot;&gt;&lt;div&gt;待人工录入&lt;/div&gt;&lt;div class=&quot;&quot;v&quot;&quot;&gt;&quot; &amp; nTodo.ToString() &amp; &quot;&lt;/div&gt;&lt;/div&gt;&quot; &amp;&#xA;                &quot;&lt;div class=&quot;&quot;card&quot;&quot;&gt;&lt;div&gt;合计价税合计&lt;/div&gt;&lt;div class=&quot;&quot;v&quot;&quot;&gt;¥&quot; &amp; sumTotal.ToString(&quot;N2&quot;) &amp; &quot;&lt;/div&gt;&lt;/div&gt;&lt;/div&gt;&quot;)&#xA;html.AppendLine(&quot;&lt;h2 style=&quot;&quot;font-size:16px&quot;&quot;&gt;发票明细&lt;/h2&gt;&lt;table&gt;&lt;tr&gt;&quot;)&#xA;For Each c As DataColumn In dt_Ledger.Columns&#xA;    If c.ColumnName &lt;&gt; &quot;文件指纹&quot; Then html.AppendLine(&quot;&lt;th&gt;&quot; &amp; c.ColumnName &amp; &quot;&lt;/th&gt;&quot;)&#xA;Next&#xA;html.AppendLine(&quot;&lt;/tr&gt;&quot;)&#xA;For Each r As DataRow In dt_Ledger.Rows&#xA;    Dim st As String = If(r(&quot;处理状态&quot;) Is Nothing, &quot;&quot;, r(&quot;处理状态&quot;).ToString())&#xA;    Dim cls As String = If(st = &quot;异常&quot;, &quot;err&quot;, If(st = &quot;待复核&quot;, &quot;rev&quot;, If(st = &quot;正常&quot;, &quot;ok&quot;, &quot;warn&quot;)))&#xA;    html.AppendLine(&quot;&lt;tr&gt;&quot;)&#xA;    For Each c As DataColumn In dt_Ledger.Columns&#xA;        If c.ColumnName = &quot;文件指纹&quot; Then Continue For&#xA;        Dim v As String = If(r(c) Is DBNull.Value, &quot;&quot;, r(c).ToString())&#xA;        If c.ColumnName = &quot;处理状态&quot; Then&#xA;            html.AppendLine(&quot;&lt;td class=&quot;&quot;&quot; &amp; cls &amp; &quot;&quot;&quot;&gt;&quot; &amp; v &amp; &quot;&lt;/td&gt;&quot;)&#xA;        Else&#xA;            html.AppendLine(&quot;&lt;td&gt;&quot; &amp; v &amp; &quot;&lt;/td&gt;&quot;)&#xA;        End If&#xA;    Next&#xA;    html.AppendLine(&quot;&lt;/tr&gt;&quot;)&#xA;Next&#xA;html.AppendLine(&quot;&lt;/table&gt;&quot;)&#xA;&#xA;html.AppendLine(&quot;&lt;h2 style=&quot;&quot;font-size:16px&quot;&quot;&gt;异常记录（&quot; &amp; dt_Issues.Rows.Count.ToString() &amp; &quot; 条）&lt;/h2&gt;&lt;table&gt;&lt;tr&gt;&quot;)&#xA;For Each c As DataColumn In dt_Issues.Columns&#xA;    html.AppendLine(&quot;&lt;th&gt;&quot; &amp; c.ColumnName &amp; &quot;&lt;/th&gt;&quot;)&#xA;Next&#xA;html.AppendLine(&quot;&lt;/tr&gt;&quot;)&#xA;For Each r As DataRow In dt_Issues.Rows&#xA;    html.AppendLine(&quot;&lt;tr&gt;&quot;)&#xA;    For Each c As DataColumn In dt_Issues.Columns&#xA;        html.AppendLine(&quot;&lt;td&gt;&quot; &amp; If(r(c) Is DBNull.Value, &quot;&quot;, r(c).ToString()) &amp; &quot;&lt;/td&gt;&quot;)&#xA;    Next&#xA;    html.AppendLine(&quot;&lt;/tr&gt;&quot;)&#xA;Next&#xA;html.AppendLine(&quot;&lt;/table&gt;&lt;/body&gt;&lt;/html&gt;&quot;)&#xA;&#xA;File.WriteAllText(Path.Combine(outDir, Config(&quot;ReportFile&quot;).ToString()),&#xA;                  html.ToString(), New UTF8Encoding(True))&#xA;Console.WriteLine(&quot;[Report] 报告已生成；待复核/异常行 &quot; &amp; nReview.ToString() &amp; &quot; 条&quot;)&#xA;Console.WriteLine(&quot;[Summary] 正常=&quot; &amp; nOK.ToString() &amp; &quot; 提示=&quot; &amp; nWarn.ToString() &amp;&#xA;                  &quot; 异常=&quot; &amp; nErr.ToString() &amp; &quot; 待复核=&quot; &amp; nRev.ToString() &amp;&#xA;                  &quot; 重复=&quot; &amp; nDup.ToString() &amp; &quot; 待人工=&quot; &amp; nTodo.ToString() &amp;&#xA;                  &quot; 价税合计=&quot; &amp; sumTotal.ToString(&quot;N2&quot;))&#xA;" Language="VisualBasic" DisplayName="生成 HTML 报告 + 待复核清单">
+  <ui:InvokeCode.Arguments>
+    <InArgument x:TypeArguments="sd:DataTable" x:Key="dt_Ledger">[dt_Ledger]</InArgument>
+    <InArgument x:TypeArguments="sd:DataTable" x:Key="dt_Issues">[dt_Issues]</InArgument>
+    <InArgument x:TypeArguments="scg:Dictionary(x:String, x:Object)" x:Key="Config">[Config]</InArgument>
+    <InArgument x:TypeArguments="x:String" x:Key="str_OutputFolder">[str_OutputFolder]</InArgument>
+  </ui:InvokeCode.Arguments>
+</ui:InvokeCode>
+    <ui:LogMessage Level="Info" DisplayName="日志·批次汇总" Message="[&quot;批次结束：台账 &quot; + dt_Ledger.Rows.Count.ToString + &quot; 行，异常 &quot; + dt_Issues.Rows.Count.ToString + &quot; 条，处理 &quot; + int_Done.ToString + &quot; 个文件，失败 &quot; + int_Failed.ToString]" />
+    <If DisplayName="有问题则抛业务异常（供 Orchestrator 告警）" Condition="[int_Failed &gt; 0]">
+      <If.Then><Sequence>
+        <ui:LogMessage Level="Warn" DisplayName="日志·需要人工介入" Message="[&quot;有 &quot; + int_Failed.ToString + &quot; 个文件未能自动处理，请查看 output/待复核.csv 与 output/_failed&quot;]" />
+      </Sequence></If.Then>
+    </If>
+  </Sequence>
+</Sequence>
+</Activity>
