@@ -39,20 +39,18 @@ python optimized_python\idle_invoice_bot.py -i invoices_input -o optimized_pytho
 
 ## 自动化
 
-流水线定义在 [`ci/invoice-ci.yml`](ci/invoice-ci.yml)，提供三段 job：
-零依赖自检（3 OS × 3 Python 版本）→ 样本回归（含台账结论断言）→ 工作日定时入账并把产出物归档为 artifact。
+流水线定义在 [`.github/workflows/invoice-ci.yml`](.github/workflows/invoice-ci.yml)，push / PR 到 `main`、
+每个工作日 09:10（UTC+8）以及手动触发时运行，三段 job：
 
-> ⚠ **该文件放在 `ci/` 而不是 `.github/workflows/` 是有原因的**：GitHub 规定用 OAuth App token
-> 推送 `.github/workflows/` 下的文件时需带 `workflow` 权限，否则整次 push 会被拒绝。
-> 想启用流水线，执行：
->
-> ```bat
-> gh auth refresh -h github.com -s workflow
-> git mv ci/invoice-ci.yml .github/workflows/invoice-ci.yml
-> git commit -m "ci: 启用流水线" && git push
-> ```
->
-> 或在 GitHub 网页端新建 workflow 后把内容粘进去（网页端不受此限制）。
+| job | 作用 |
+|---|---|
+| `selftest` | 零依赖自检（3 OS × 3 Python 版本），含 UiPath 版 XAML 生成与转义校验 |
+| `regression` | 装齐依赖跑真实样本，用 `assert_ledger.py` 断言台账结论稳定 |
+| `scheduled-run` | 工作日定时"自动入账"，产出物存 artifact 并提交台账 |
+
+> 维护提示：GitHub 规定用 OAuth App token（如 gh CLI 凭据）推送 `.github/workflows/` 下的文件时，
+> token 必须带 `workflow` 权限，否则整次 push 会被拒绝。本机已用
+> `gh auth refresh -h github.com -s workflow` 补上；换机器或换凭据时需要重新补一次。
 
 ---
 
