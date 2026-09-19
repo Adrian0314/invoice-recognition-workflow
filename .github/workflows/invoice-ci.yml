@@ -105,7 +105,13 @@ jobs:
         run: python .github/scripts/clean_output.py optimized_python/output_v2
 
       - name: 全量处理
-        run: python optimized_python/idle_invoice_bot.py -i invoices_input -o optimized_python/output_v2
+        # 用包装脚本运行：机器人退出码 2 = 「存在待人工处理的项」，
+        # 而样本集里故意埋了边界用例，所以 2 属预期、不算失败；
+        # 真正的判定交给下一步的 assert_ledger.py。
+        run: >-
+          python .github/scripts/run_and_check.py
+          optimized_python/idle_invoice_bot.py --
+          -i invoices_input -o optimized_python/output_v2
 
       - name: 断言台账结论
         run: python .github/scripts/assert_ledger.py optimized_python/output_v2/发票明细.json
@@ -133,10 +139,15 @@ jobs:
         run: python -m pip install pymupdf openpyxl pillow
 
       - name: 处理
+        # 同样用包装脚本：退出码 2 属预期，不当作失败
         run: |
-          python optimized_python/idle_invoice_bot.py \
+          python .github/scripts/run_and_check.py \
+            optimized_python/idle_invoice_bot.py -- \
             -i "${{ github.event.inputs.input_dir || 'invoices_input' }}" \
             -o optimized_python/output_v2
+
+      - name: 断言台账结论
+        run: python .github/scripts/assert_ledger.py optimized_python/output_v2/发票明细.json
 
       - name: 提交台账变更（历史可追溯）
         run: |

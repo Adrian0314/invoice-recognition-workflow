@@ -875,6 +875,11 @@ def ocr_preprocess(img):
 
 
 # ------------------------- 3.4 文本质量闸门 -------------------------
+# 关键字段标签探针 —— 用于判断"这份文本能不能用来解析发票"
+LABEL_PROBE = ("发票号码", "开票日期", "价税合计", "购买方", "销售方",
+               "税额", "发票代码", "校验码", "合计")
+
+
 def text_quality(text: str) -> dict:
     """
     给"提取出来的文本"打分，用来决定是否需要升级提取方式。
@@ -882,11 +887,16 @@ def text_quality(text: str) -> dict:
 
     评分看重四件事：够不够长、可打印比例、汉字占比、数字占比。
     典型反面例子：OCR 把票据识别成一堆 `|||| ~~~` 或全体方块字。
+
+    另外做一次**关键标签探针**：这一步能抓住"字符全都正常、可打印比例也很高，
+    但标签与取值被拆散在不同文本块里"的文本 —— 光看可打印比例是发现不了的。
+    （真实案例：PyMuPDF 按区块排序输出时，12 份样本的标签与数值被分开，
+      文本质量仍判 1.0，但解析器一个字段都取不到。）
     """
     t = (text or "").strip()
     n = len(t)
     if n == 0:
-        return {"score": 0.0, "len": 0, "reasons": ["空文本"]}
+        return {"score": 0.0, "len": 0, "labels": 0, "reasons": ["空文本"]}
 
     printable = sum(1 for c in t if c.isprintable() or c in "\n\t")
     cjk = sum(1 for c in t if "\u4e00" <= c <= "\u9fff")
@@ -919,14 +929,62 @@ def text_quality(text: str) -> dict:
         score -= 0.20
         reasons.append("存在替换符/方块字（字体映射失败）")
 
+    label_hits = sum(1 for k in LABEL_PROBE if k in t)
+    if label_hits < 2:
+        score -= 0.35
+        reasons.append(f"关键字段标签缺失（命中 {label_hits}/{len(LABEL_PROBE)}）")
+
     return {"score": round(max(0.0, min(1.0, score)), 3), "len": n,
             "cjk": cjk, "digit": digit, "noise": round(ratio_noise, 3),
-            "reasons": reasons}
+            "labels": label_hits, "reasons": reasons}
 
 
 # ------------------------- 3.5 统一入口 -------------------------
+def _pdf_text_views(path) -> tuple:
+    """
+    收集所有可用的 PDF 文本视图，返回 (views, pages)，views 为 [(来源, 文本), ...]。
+
+    为什么要多个视图：PyMuPDF 的 `get_text("text")` 按文本**区块**排序输出，
+    遇到"标签在左列、取值在右列"的版式时，标签与数值会被拆进不同区块、在正文里
+    相距很远，解析器的"标签紧贴取值"假设就失效了；而本模块内置的标准库解析器按
+    内容流**绘制顺序**输出，标签紧邻数值。两者对不同版式各有胜负。
+    真实案例：某批样本在 PyMuPDF 视图下 12 张全部解析失败（置信度掉到 29%），
+    换成标准库视图全部正常 —— 所以两个都抽出来，交给上层解析后择优。
+    """
+    views, pages = [], 0
+    if _have("pymupdf") or _have("fitz"):
+        try:
+            t, p = pdf_text_pymupdf(path)
+            pages = max(pages, p)
+            if t.strip():
+                views.append(("pdf-text(pymupdf)", t))
+        except Exception:                                  # noqa: BLE001
+            pass
+    try:
+        t, p = pdf_text_stdlib(path)
+        pages = max(pages, p)
+        if t.strip():
+            views.append(("pdf-text(stdlib)", t))
+    except Exception:                                      # noqa: BLE001
+        pass
+
+    # 两个抽取器给出的文本完全相同时只保留一份，避免无意义的重复解析
+    seen, uniq = set(), []
+    for src, t in views:
+        k = hash(t)
+        if k not in seen:
+            seen.add(k)
+            uniq.append((src, t))
+    return uniq, pages
+
+
 def extract_text(path, cfg: dict) -> dict:
-    """返回 {text, source, pages, quality, notes}；失败抛 RuntimeError。"""
+    """
+    返回 {text, alts, source, pages, quality, notes}；失败抛 RuntimeError。
+
+    `text` 是按"文本质量"选出的主视图，`alts` 是其余可用视图 ——
+    上层会把所有视图都解析一遍再择优（见 _pdf_text_views 的说明）。
+    """
     path = Path(path)
     if not path.exists():
         raise RuntimeError(f"文件不存在：{path}")
@@ -940,30 +998,36 @@ def extract_text(path, cfg: dict) -> dict:
     if ext in IMAGE_EXTS:
         return _extract_image(path, cfg, notes)
 
-    # ---- PDF：文本层（PyMuPDF → 标准库） ----
-    text, pages, src = "", 0, "pdf-text"
-    pymupdf_failed = ""
-    if _have("pymupdf") or _have("fitz"):
-        try:
-            text, pages = pdf_text_pymupdf(path)
-            src = "pdf-text(pymupdf)"
-        except Exception as exc:                     # noqa: BLE001
-            pymupdf_failed = f"PyMuPDF 提取失败（{exc}）"
-    if not text.strip():
-        try:
-            text, pages = pdf_text_stdlib(path)
-            src = "pdf-text(stdlib)"
-            if pymupdf_failed:
-                notes.append(pymupdf_failed + "，已回退标准库解析")
-        except Exception as exc:                     # noqa: BLE001
-            notes.append(f"标准库 PDF 解析失败：{exc}")
+    # ---- PDF：先收集全部文本视图 ----
+    views, pages = _pdf_text_views(path)
 
+    def _ret(txt, source, quality, extra_alts):
+        return {"text": txt, "alts": extra_alts, "source": source, "pages": pages,
+                "quality": quality, "notes": "；".join(notes)}
+
+    if not views:
+        # 完全没有文本层 → 扫描件分支
+        if cfg.get("ocr_enabled") == "off":
+            raise RuntimeError("该 PDF 没有文本层（疑似扫描件），且配置里关闭了 OCR。")
+        if not ocr_provider():
+            raise RuntimeError("该 PDF 没有可用文本层（疑似扫描件）。" + OCR_HINT)
+        ocr_text, ocr_pages = _pdf_ocr(path, cfg)
+        pages = max(pages, ocr_pages)
+        return _ret(ocr_text, f"ocr({ocr_provider()})",
+                    text_quality(ocr_text)["score"], [])
+
+    # 按文本质量排序定主视图；同分时优先 PyMuPDF（对复杂版式更稳）
+    ranked = sorted(
+        ((text_quality(t)["score"] + (0.01 if "pymupdf" in s else 0.0), i, s, t)
+         for i, (s, t) in enumerate(views)),
+        key=lambda x: (-x[0], x[1]))
+    src, text = ranked[0][2], ranked[0][3]
+    alts = [(s, t) for _sc, _i, s, t in ranked[1:]]
     q = text_quality(text)
     thick = len(text.strip()) >= int(cfg["min_text_chars"])
 
     if thick and q["score"] >= float(cfg["text_quality_min"]):
-        return {"text": text, "source": src, "pages": pages,
-                "quality": q["score"], "notes": "；".join(notes)}
+        return _ret(text, src, q["score"], alts)
 
     # ---- 文本层不可用或质量差 → 尝试 OCR ----
     if cfg.get("ocr_enabled") == "off":
@@ -973,33 +1037,30 @@ def extract_text(path, cfg: dict) -> dict:
                 + (OCR_HINT if not ocr_provider() else "可将 ocr_enabled 改回 auto。"))
         notes.append(f"文本质量偏低({q['score']}：{'、'.join(q['reasons'] or ['-'])}），"
                      f"但已按配置跳过 OCR")
-        return {"text": text, "source": src, "pages": pages,
-                "quality": q["score"], "notes": "；".join(notes)}
+        return _ret(text, src, q["score"], alts)
 
     if not ocr_provider():
         if not thick:
             raise RuntimeError("该 PDF 没有可用文本层（疑似扫描件）。" + OCR_HINT)
-        notes.append(f"文本质量偏低({q['score']})，未装 OCR，沿用文本层结果")
-        return {"text": text, "source": src, "pages": pages,
-                "quality": q["score"], "notes": "；".join(notes)}
+        notes.append(f"文本质量偏低({q['score']}：{'、'.join(q['reasons'] or ['-'])}），"
+                     f"未装 OCR，沿用文本层结果")
+        return _ret(text, src, q["score"], alts)
 
     try:
         ocr_text, ocr_pages = _pdf_ocr(path, cfg)
         oq = text_quality(ocr_text)
+        pages = max(pages, ocr_pages)
         if not thick or oq["score"] > q["score"]:
             notes.append(f"文本层质量 {q['score']} → OCR 质量 {oq['score']}，已采用 OCR 结果")
-            return {"text": ocr_text, "source": f"ocr({ocr_provider()})",
-                    "pages": max(pages, ocr_pages), "quality": oq["score"],
-                    "notes": "；".join(notes)}
+            return _ret(ocr_text, f"ocr({ocr_provider()})", oq["score"],
+                        [(src, text)] + alts)
         notes.append(f"文本层质量 {q['score']} ≥ OCR 质量 {oq['score']}，保留文本层")
-        return {"text": text, "source": src, "pages": pages,
-                "quality": q["score"], "notes": "；".join(notes)}
+        return _ret(text, src, q["score"], alts + [("ocr", ocr_text)])
     except Exception as exc:                         # noqa: BLE001
         if not thick:
             raise RuntimeError(f"扫描件 OCR 失败：{exc}") from exc
         notes.append(f"OCR 尝试失败（{exc}），沿用文本层结果")
-        return {"text": text, "source": src, "pages": pages,
-                "quality": q["score"], "notes": "；".join(notes)}
+        return _ret(text, src, q["score"], alts)
 
 
 def _pdf_ocr(path, cfg) -> tuple:
@@ -1067,7 +1128,7 @@ def _extract_image(path, cfg, notes) -> dict:
             break
     if not best.strip():
         raise RuntimeError("图片未识别到任何文字（请确认清晰度，或换电子版发票）")
-    return {"text": best, "source": f"ocr({ocr_provider()})", "pages": 1,
+    return {"text": best, "alts": [], "source": f"ocr({ocr_provider()})", "pages": 1,
             "quality": best_q, "notes": "；".join(notes)}
 
 
@@ -1858,6 +1919,17 @@ def overall_confidence(rec: dict) -> float:
     return round(num / den, 3) if den else 0.0
 
 
+def _records_score(records: list) -> float:
+    """
+    给一组解析结果打分，用于"多视图择优"：取各记录加权置信度的平均值。
+    关键字段取不到时分数会明显偏低（缺失字段按其权重计 0），
+    所以它能区分"解析成功"和"文本拿到了但字段没抽出来"。
+    """
+    if not records:
+        return -1.0
+    return round(sum(overall_confidence(r) for r in records) / len(records), 4)
+
+
 def decide_status(issues: list, conf_overall: float, rec: dict, cfg: dict) -> str:
     if any(i["level"] == "严重" for i in issues):
         return ST_ERROR
@@ -2572,24 +2644,40 @@ def process_file(path: Path, ledger: Ledger, cfg: dict, templates: list,
 
     delta["new_files"] += 1
 
-    # ---- 字段解析 ----
-    try:
-        records = parse_invoice(info["text"], name, templates)
-    except Exception as exc:                                # noqa: BLE001
-        ledger.add_issue(name, "", "严重", "字段解析", f"解析异常：{exc}",
-                         "请把该文件反馈给流程维护者")
-        log(f"  [异常] {name} 解析失败：{exc}")
-        if verbose:
-            import traceback
-            traceback.print_exc()
+    # ---- 字段解析：多视图择优 ----
+    # 同一份 PDF 可能有多个文本视图（PyMuPDF / 标准库 / OCR），不同视图对不同版式
+    # 各有胜负：PyMuPDF 按文本区块排序，遇到"标签在左列、取值在右列"的版式会把两者
+    # 拆散；标准库解析器按内容流绘制顺序，标签紧邻取值。所以这里把每个视图都解析
+    # 一遍，用"记录级加权置信度"挑最好的一组 —— 与"文本质量闸门"是同一套比质量取优的思路。
+    views_all = [(info["source"], info["text"])] + list(info.get("alts") or [])
+    candidates = []                      # [(来源, 记录列表, 得分)]
+    for src_i, txt_i in views_all:
+        try:
+            recs_i = parse_invoice(txt_i, name, templates)
+        except Exception as exc:                            # noqa: BLE001
+            ledger.add_issue(name, "", "严重", "字段解析",
+                             f"{src_i} 解析异常：{exc}", "请把该文件反馈给流程维护者")
+            log(f"  [异常] {name} 解析失败（{src_i}）：{exc}")
+            if verbose:
+                import traceback
+                traceback.print_exc()
+            continue
+        candidates.append((src_i, recs_i, _records_score(recs_i)))
+
+    if not candidates:
         return delta
+
+    candidates.sort(key=lambda c: -c[2])
+    src_note, records, best_score = candidates[0]
+    if records and len(candidates) > 1 and best_score > candidates[-1][2] + 0.02:
+        src_note = f"{src_note}(多视图择优，共 {len(candidates)} 个视图)"
+        log(f"  [择优] {name} → 采用 {src_note.split('(')[0]}"
+            f"（候选得分 {', '.join(f'{s}={sc:.2f}' for s, _r, sc in candidates)}）")
 
     if not records:
         ledger.add_issue(name, "", "严重", "字段解析", "未从文件中解析出任何发票记录",
                          "确认是否发票文件（非发票 PDF 会被忽略）")
         return delta
-
-    src_note = info["source"]
 
     # 同一文件含多张发票时，它们共享同一个文件指纹；
     # 第 1 张入账后必须停止用"文件指纹"去判重，否则第 2 张起会被误判为「文件级重复」。
@@ -2766,7 +2854,17 @@ def dry_run(cfg: dict, templates: list, log=print) -> int:
     for p in files:
         try:
             info = extract_text(p, cfg)
-            recs = parse_invoice(info["text"], p.name, templates)
+            # 与正式流程一致：所有视图都解析一遍，按记录级置信度择优
+            views_all = [(info["source"], info["text"])] + list(info.get("alts") or [])
+            picked, view_note = None, ""
+            for src_i, txt_i in views_all:
+                recs_i = parse_invoice(txt_i, p.name, templates)
+                sc_i = _records_score(recs_i)
+                if picked is None or sc_i > picked[1]:
+                    picked = (src_i, sc_i, recs_i)
+            src_show, _sc, recs = picked
+            if src_show != info["source"]:
+                view_note = f"（多视图择优：{info['source']}→{src_show}）"
         except Exception as exc:                            # noqa: BLE001
             log(f"✗ {p.name}\n   提取失败：{exc}")
             bad += 1
@@ -2777,7 +2875,7 @@ def dry_run(cfg: dict, templates: list, log=print) -> int:
             conf = overall_confidence(r)
             st = decide_status(issues, conf, r, cfg)
             tag = f"（第 {i}/{len(recs)} 张）" if len(recs) > 1 else ""
-            log(f"✓ {p.name}{tag}  [{info['source']} 质量{info['quality']}]  "
+            log(f"✓ {p.name}{tag}  [{src_show} 质量{info['quality']}]{view_note}  "
                 f"置信 {conf * 100:.1f}%  状态 {st}")
             log(f"   类型 {r.get('invoice_type') or '—'} | "
                 f"号码 {r.get('invoice_no') or '—'} | 日期 {r.get('issue_date') or '—'}")
@@ -2892,6 +2990,33 @@ def selftest() -> int:
     ok_ids = len(ids) == len(set(ids))
     print(f"{'✓' if ok_ids else '✗'} 规则注册表：{len(RULES)} 条规则，id 唯一 = {ok_ids}")
     failed += not ok_ids
+
+    # 多视图择优判据：模拟"标签与取值被拆散"的文本视图（PyMuPDF 按区块排序时会这样），
+    # 断言它的得分明显低于正常视图 —— 这是"多视图择优"能救回来的前提。
+    good_recs = parse_invoice(SELFTEST_CASES[0]["text"], "selftest", templates)
+    split_view = (
+        "26312000000012345678\n2026-03-12\n10000.00\n600.00\n10600.00\n6%\n"
+        "某某科技有限公司\n虚拟信息技术服务有限公司\n"
+        "91310115MA1H8WXYQ4\n91110108MA01C2XY3P\n"
+        "发票号码 开票日期 合计金额 合计税额 价税合计 税率 购买方信息 名称 "
+        "销售方信息 名称 纳税人识别号 项目名称 开票人"
+    )
+    split_recs = parse_invoice(split_view, "selftest", templates)
+    g, sp = _records_score(good_recs), _records_score(split_recs)
+    ok_split = g > sp and sp < 0.6
+    print(f"{'✓' if ok_split else '✗'} 多视图择优判据：正常视图 {g:.3f} > 拆散视图 {sp:.3f}"
+          f"（且拆散视图 < 0.6）")
+    failed += not ok_split
+
+    # 关键标签探针：标签缺失的文本必须被判低分
+    q_label_ok = text_quality(SELFTEST_CASES[0]["text"])
+    q_label_bad = text_quality("12345678 2026-03-12 10600.00 10000.00 600.00 6%")
+    ok_label = q_label_ok["labels"] >= 3 and q_label_bad["labels"] < 2 \
+        and q_label_ok["score"] > q_label_bad["score"]
+    print(f"{'✓' if ok_label else '✗'} 标签探针：正常票面命中 {q_label_ok['labels']} 个标签、"
+          f"无标签文本命中 {q_label_bad['labels']} 个，得分 {q_label_ok['score']} > "
+          f"{q_label_bad['score']}")
+    failed += not ok_label
 
     print("-" * 72)
     print(f"自检结果：{'全部通过' if not failed else f'{failed} 项未通过'}")

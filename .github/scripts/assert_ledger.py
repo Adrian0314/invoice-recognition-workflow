@@ -18,13 +18,15 @@ from collections import Counter
 from pathlib import Path
 
 # 基准：中文样本 11 份 + 国际样本 12 份 + 样票 10 张
-# 设计上"必须被检出"的问题（与 README 第九节的 6 条对应关系见下方断言）
+# 说明：机器人的退出码 2（存在待人工处理的项）在样本集下属预期，
+#       所以"跑没跑通"由 run_and_check.py 判，"结果对不对"由本脚本判。
 BASELINE = {
-    "min_rows": 20,            # 台账至少要有这么多行，否则说明大面积解析失败
-    "min_ok_rows": 15,         # 正常行数下限
-    "max_error_rows": 6,       # 异常行数上限（超过说明误报变多）
+    "min_rows": 30,            # 台账行数下限（实测 31）
+    "min_ok_rows": 26,         # 正常行数下限（实测 27；留 1 行余量）
+    "max_error_rows": 6,       # 异常行数上限（实测 1，全是故意埋的用例）
     "must_have_duplicate": 1,  # 至少要有 1 条重复拦截（样本 04/10/11）
     "require_confidence": True,
+    "min_confidence_nonempty": 0.80,   # 正常行的置信度下限（实测 88%+）
 }
 
 
@@ -64,6 +66,23 @@ def main(argv) -> int:
         missing = [r.get("源文件名") for r in rows if not str(r.get("识别置信度") or "").strip()]
         if missing:
             problems.append(f"{len(missing)} 行缺少『识别置信度』：{missing[:3]}")
+
+    # 正常行的置信度必须足够高。
+    # 这一条专门用来抓"字段抽取整体退化"：字段虽然侥幸抽到、结论也判正常，
+    # 但置信度普遍偏低时，说明抽取质量已经不可靠了（例如换了文本抽取器之后）。
+    low = []
+    for r in rows:
+        if str(r.get("处理状态")) != "正常":
+            continue
+        try:
+            c = float(str(r.get("识别置信度") or "0").rstrip("%")) / 100.0
+        except ValueError:
+            c = 0.0
+        if c < BASELINE["min_confidence_nonempty"]:
+            low.append((r.get("源文件名"), round(c, 3)))
+    if low:
+        problems.append(f"{len(low)} 行虽判正常但置信度低于 "
+                        f"{BASELINE['min_confidence_nonempty']:.0%}：{low[:3]}")
 
     # 长数字串必须保持文本形态（前导 0 / 20 位不丢）
     for r in rows:
