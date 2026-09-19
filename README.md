@@ -109,9 +109,7 @@ python main.py
 > 另注：不能图省事改用 `csv.writer` —— 它会把字段里的引号再转义一层，
 > 落盘成 `"=""011002000001"""`，Excel 反而会把 `="…"` 当普通文字显示出来。
 
-> 本机已预置好虚拟环境，可直接用：
-> `C:\Users\Administrator\.workbuddy\binaries\python\envs\invoice\Scripts\python.exe main.py`
-> 或双击 `run.bat`。
+> 依赖：`pip install -r requirements.txt`（v1 需要 PyMuPDF + openpyxl；v2 单文件版零依赖即可运行）。
 
 > **⚠ 维护 `run.bat` 时注意**：该文件必须是 **GBK(ANSI) 编码 + CRLF 换行**，这是 cmd.exe 的硬性要求。
 > 若被编辑器以 UTF-8 重新保存，会出现乱码，甚至报

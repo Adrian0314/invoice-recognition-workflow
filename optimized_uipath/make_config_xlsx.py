@@ -26,14 +26,16 @@ HERE = Path(__file__).resolve().parent
 # --------------------------------------------------------------------------
 SETTINGS = [
     ("Name", "Value", "说明"),
-    # 路径 —— 用绝对路径最稳；也可写成相对 Studio 工程根目录的相对路径
-    ("InputFolder", r"D:\WorkBuddy-WorkSpace\invoice-automation\invoices_input",
-     "发票收件箱：机器人扫描这个目录"),
-    ("OutputFolder", r"D:\WorkBuddy-WorkSpace\invoice-automation\optimized_uipath\output",
-     "输出目录：台账 / 报告 / 待复核清单都写在这里"),
-    ("ProcessedFolder", r"D:\WorkBuddy-WorkSpace\invoice-automation\optimized_uipath\output\_processed",
+    # 路径 —— 默认用「相对 UiPath 工程目录」的写法，开箱即用、不写死任何人的本机路径。
+    # ⚠ 生产环境（发布到 Orchestrator 后运行）建议改成绝对路径，
+    #   因为那时工作目录是机器人的临时目录，不再是工程目录。
+    ("InputFolder", r"..\invoices_input",
+     "发票收件箱：机器人扫描这个目录（相对 UiPath 工程目录，即仓库根的 invoices_input）"),
+    ("OutputFolder", r"output",
+     "输出目录：台账 / 报告 / 待复核清单都写在这里（相对 UiPath 工程目录）"),
+    ("ProcessedFolder", r"output\_processed",
      "处理完成的原件归档目录（MoveFile=True 时使用）"),
-    ("FailedFolder", r"D:\WorkBuddy-WorkSpace\invoice-automation\optimized_uipath\output\_failed",
+    ("FailedFolder", r"output\_failed",
      "处理失败的原件隔离目录，供人工排查"),
     ("LedgerFile", "发票台账.xlsx", "台账文件名（放在 OutputFolder 下）"),
     ("ReportFile", "处理报告.html", "HTML 报告文件名"),

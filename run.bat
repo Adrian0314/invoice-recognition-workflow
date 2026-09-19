@@ -3,8 +3,17 @@ chcp 936 >nul 2>nul
 setlocal
 pushd "%~dp0"
 
-set "PYEXE=C:\Users\Administrator\.workbuddy\binaries\python\envs\invoice\Scripts\python.exe"
+rem 解释器：优先用本目录下的 .venv，其次用 PATH 里的 python
+set "PYEXE=%~dp0.venv\Scripts\python.exe"
 if not exist "%PYEXE%" set "PYEXE=python"
+"%PYEXE%" --version >nul 2>nul
+if errorlevel 1 (
+  echo.
+  echo [错误] 未找到可用的 Python。
+  echo   请安装 Python 3.9+ 并加入 PATH，或在项目根目录创建 .venv
+  pause
+  exit /b 1
+)
 
 echo ============================================================
 echo   发票自动化处理工作流

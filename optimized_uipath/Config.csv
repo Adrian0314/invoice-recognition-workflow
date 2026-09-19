@@ -1,8 +1,8 @@
 ﻿Name,Value,说明
-InputFolder,D:\WorkBuddy-WorkSpace\invoice-automation\invoices_input,发票收件箱：机器人扫描这个目录
-OutputFolder,D:\WorkBuddy-WorkSpace\invoice-automation\optimized_uipath\output,输出目录：台账 / 报告 / 待复核清单都写在这里
-ProcessedFolder,D:\WorkBuddy-WorkSpace\invoice-automation\optimized_uipath\output\_processed,处理完成的原件归档目录（MoveFile=True 时使用）
-FailedFolder,D:\WorkBuddy-WorkSpace\invoice-automation\optimized_uipath\output\_failed,处理失败的原件隔离目录，供人工排查
+InputFolder,..\invoices_input,发票收件箱：机器人扫描这个目录（相对 UiPath 工程目录，即仓库根的 invoices_input）
+OutputFolder,output,输出目录：台账 / 报告 / 待复核清单都写在这里（相对 UiPath 工程目录）
+ProcessedFolder,output\_processed,处理完成的原件归档目录（MoveFile=True 时使用）
+FailedFolder,output\_failed,处理失败的原件隔离目录，供人工排查
 LedgerFile,发票台账.xlsx,台账文件名（放在 OutputFolder 下）
 ReportFile,处理报告.html,HTML 报告文件名
 ReviewFile,待复核.csv,低置信度/待人工录入清单，人工只看这一个文件
