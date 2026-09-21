@@ -102,8 +102,15 @@ jobs:
       # PyMuPDF 版本不同，生成出来的字节与文本顺序也不同，会让结论随版本漂移，
       # 断言就失去了意义（曾经因此把 CI 弄红两次，排查半天）。
       # 生成器本身另有单独的一步做冒烟测试（见下）。
+      #
+      # 另外：收件箱 invoices_input/ 是运行时目录、不进版本库，
+      # 所以这里先用已提交的规范样本（samples/ + samples_intl/ + samples_mock/）
+      # 现场拼出一个确定的收件箱。输入确定，结论才可比。
+      - name: 构建回归输入（用已提交的样本拼出收件箱）
+        run: python .github/scripts/build_inbox.py invoices_input
+
       - name: 清空输出目录
-        run: python .github/scripts/clean_output.py optimized_python/output_v2
+        run: python .github/scripts/clean_output.py output
 
       - name: 全量处理
         # 用包装脚本运行：机器人退出码 2 = 「存在待人工处理的项」，
@@ -112,10 +119,10 @@ jobs:
         run: >-
           python .github/scripts/run_and_check.py
           optimized_python/idle_invoice_bot.py --
-          -i invoices_input -o optimized_python/output_v2
+          -i invoices_input -o output
 
       - name: 断言台账结论
-        run: python .github/scripts/assert_ledger.py optimized_python/output_v2/发票明细.json
+        run: python .github/scripts/assert_ledger.py output/发票明细.json
 
       - name: 生成器冒烟测试 + 新生成样本的诊断
         # 与上面的回归分开：这里只保证生成脚本还能跑、生成的 PDF 还能被读到，
@@ -142,7 +149,7 @@ jobs:
         if: always()
         with:
           name: invoice-output-${{ matrix.os }}
-          path: optimized_python/output_v2/
+          path: output/
           if-no-files-found: warn
           retention-days: 30
 
@@ -159,27 +166,32 @@ jobs:
       - name: 安装依赖
         run: python -m pip install pymupdf openpyxl pillow
 
+      - name: 构建收件箱（手动触发时若指定了 input_dir，则用指定的）
+        run: |
+          python .github/scripts/build_inbox.py \
+            "${{ github.event.inputs.input_dir || 'invoices_input' }}"
+
       - name: 处理
         # 同样用包装脚本：退出码 2 属预期，不当作失败
         run: |
           python .github/scripts/run_and_check.py \
             optimized_python/idle_invoice_bot.py -- \
             -i "${{ github.event.inputs.input_dir || 'invoices_input' }}" \
-            -o optimized_python/output_v2
+            -o output
 
       - name: 断言台账结论
-        run: python .github/scripts/assert_ledger.py optimized_python/output_v2/发票明细.json
+        run: python .github/scripts/assert_ledger.py output/发票明细.json
 
       - name: 提交台账变更（历史可追溯）
         run: |
           git config user.name  "invoice-bot"
           git config user.email "invoice-bot@users.noreply.github.com"
-          git add -A optimized_python/output_v2 || true
+          git add -A output || true
           git diff --staged --quiet || git commit -m "chore(发票台账): 自动入账"
           git push || true
 
       - uses: actions/upload-artifact@v4
         with:
           name: invoice-output-scheduled
-          path: optimized_python/output_v2/
+          path: output/
           retention-days: 90

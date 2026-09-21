@@ -74,7 +74,7 @@ from collections import defaultdict
 from datetime import date, datetime
 from pathlib import Path
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 APP_DIR = Path(__file__).resolve().parent
 
@@ -85,7 +85,7 @@ APP_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG = {
     # ---- 目录 ----
     "input_dir": str(APP_DIR / "invoices_input"),
-    "output_dir": str(APP_DIR / "output_v2"),   # 刻意与 v1 的 output/ 分开，避免互相覆盖
+    "output_dir": str(APP_DIR.parent / "output"),  # 统一写入项目根的 output/，不再区分 v1/v2
     "recursive": True,
     "move_processed": False,                    # True = 处理完把原件移到 processed_dir
     "processed_dir": "_processed",
@@ -106,8 +106,12 @@ DEFAULT_CONFIG = {
     "min_text_chars": 20,        # 文本层少于这么多字符 → 认为没有文本层
     "text_quality_min": 0.55,    # 文本质量评分低于此值 → 升级提取方式
     "ocr_enabled": "auto",       # auto | off
-    "ocr_timeout": 600,
+    "ocr_timeout": 600,          # OCR 子进程超时（秒），实际生效值
     "ocr_zoom": 2.5,             # 扫描件栅格化倍率
+
+    # ---- 标准库 PDF 解析器的解码上限（性能护栏，见 pdf_text_stdlib 说明）----
+    "cmap_probe_max_kb": 512,    # 第一遍找 ToUnicode CMap 时，超过此大小的流不解码
+    "pdf_stream_max_mb": 16,     # 内容流解码上限；超过则跳过（避免被图像流拖垮）
 
     # ---- 置信度 ----
     "min_confidence": 0.75,          # 记录级加权置信度阈值
@@ -304,7 +308,7 @@ def to_lines(t: str) -> list:
     return out
 
 
-MONEY_STR = r"-?\d[\d,]*\.\d{1,2}"
+MONEY_STR = r"-?\d[\d,]*(?:\.\d{1,2})?"
 
 
 def to_money(s):
@@ -315,6 +319,63 @@ def to_money(s):
         return round(float(s), 2)
     except ValueError:
         return None
+
+
+# ==========================================================================
+# 2.1 中文大写金额 → 数字
+#     用途：与「价税合计（小写）」交叉勾稽。这是财务票据最有价值的一条
+#     互相印证关系 —— 大小写不一致几乎必然是识别错误（OCR 认错字 / 字体映射错），
+#     而单字段校验完全抓不到。规则见 R17。
+# ==========================================================================
+_CN_DIGITS = {
+    "零": 0, "壹": 1, "贰": 2, "叁": 3, "肆": 4, "伍": 5, "陆": 6, "柒": 7,
+    "捌": 8, "玖": 9, "〇": 0, "一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
+    "六": 6, "七": 7, "八": 8, "九": 9, "两": 2,
+}
+_CN_UNITS = {"拾": 10, "佰": 100, "仟": 1000, "十": 10, "百": 100, "千": 1000}
+_CN_SECTIONS = {"万": 10 ** 4, "亿": 10 ** 8}
+
+
+def cn_amount_to_number(s):
+    """
+    把「壹仟零陆拾圆整」这类中文大写金额转成数字；无法解析返回 None。
+
+    宽容度：圆/圓/圜/元 都认、整/正 忽略、可带空格与全角符号、
+    也接受 一二三 这类小写汉字。分/角单独处理。
+    """
+    if not s:
+        return None
+    t = str(s)
+    t = re.sub(r"[（(][^)）]*[)）]", "", t)          # 去掉「(大写)」这类括注
+    t = t.replace("整", "").replace("正", "")
+    t = t.replace("圆", "元").replace("圓", "元").replace("圜", "元")
+    t = re.sub(r"[￥¥,，\s]", "", t)
+    if not t or not any(ch in t for ch in _CN_DIGITS) \
+            and "元" not in t and "角" not in t and "分" not in t:
+        return None
+
+    jiao = fen = 0
+    m = re.search(r"([零壹贰叁肆伍陆柒捌玖〇一二三四五六七八九])角", t)
+    if m:
+        jiao = _CN_DIGITS[m.group(1)]
+    m = re.search(r"([零壹贰叁肆伍陆柒捌玖〇一二三四五六七八九])分", t)
+    if m:
+        fen = _CN_DIGITS[m.group(1)]
+
+    main = re.split(r"[元角分]", t)[0]
+    total = section = num = 0
+    for ch in main:
+        if ch in _CN_DIGITS:
+            num = _CN_DIGITS[ch]
+        elif ch in _CN_UNITS:
+            section += (num or 1) * _CN_UNITS[ch]
+            num = 0
+        elif ch in _CN_SECTIONS:
+            section = (section + num) * _CN_SECTIONS[ch]
+            total += section
+            section = num = 0
+    value = total + section + num + jiao / 10.0 + fen / 100.0
+    return round(value, 2)
 
 
 def money_matches(s) -> bool:
@@ -412,6 +473,55 @@ def _stream_filters(head: bytes) -> list:
     return [m.group(1)] if m else []
 
 
+# 只可能是图像的滤镜 / 子类型：这类流里不可能有 ToUnicode CMap 或文本绘制指令，
+# 直接跳过解码。真实扫描件 PDF 里图像流往往占 95% 以上体积。
+_IMAGE_FILTERS = {b"DCTDecode", b"JPXDecode", b"JBIG2Decode", b"CCITTFaxDecode"}
+_IMAGE_SUBTYPE = re.compile(rb"/Subtype\s*/Image")
+
+
+def is_image_stream(head: bytes) -> bool:
+    if _IMAGE_SUBTYPE.search(head):
+        return True
+    return any(f in _IMAGE_FILTERS for f in _stream_filters(head))
+
+
+def stream_reader(objs: dict, cmap_limit: int, content_limit: int):
+    """
+    带缓存与体量护栏的流解码器（性能护栏，v2.1 新增）。
+
+    为什么需要它（实测数据）：
+      · 旧实现把每个对象解码两遍（第一遍找 CMap、第三遍取内容流），
+        44 个对象的样本实测调用 88 次；
+      · 更要命的是与票面无关的大流（扫描件的图像流）也会被完整解压 ——
+        合成测试里 8 个 2MB 的 Flate 流（共 16MB）被解出 256MB 数据、耗时 628ms，
+        而文件里真正有用的文本流只有几十字节。
+
+    做法：图像流永久跳过；其余流按「本次请求的上限」决定是否解码，并缓存结果。
+    上限放宽后的重试仍然允许（第一遍 512KB 没解，第三遍放宽到 16MB 会重试）。
+    """
+    dec, skip = {}, {}
+
+    def get(num: int, limit: int):
+        if num in skip:
+            return None
+        prev = dec.get(num)
+        if prev is not None and (prev[1] is not None or prev[0] >= limit):
+            return prev[1]           # 已成功解出，或已用不小于本次的上限试过
+        body = objs.get(num, b"")
+        head = body.split(b"stream", 1)[0] if b"stream" in body else body
+        if is_image_stream(head):
+            skip[num] = True         # 图像流永远不需要解码
+            return None
+        if len(body) > limit:        # body 含流字典，作为体积的保守上界
+            dec[num] = (limit, None)
+            return None
+        out = _decode_stream(body)
+        dec[num] = (limit, out)
+        return out
+
+    return get
+
+
 def _apply_one_filter(data: bytes, name: bytes):
     if name == b"FlateDecode":
         for fn in (lambda d: zlib.decompress(d),
@@ -492,7 +602,7 @@ _ENC_UTF16 = {
 _ENC_GBK = {b"GBK-EUC-H", b"GBK-EUC-V", b"GBpc-EUC-H", b"B5pc-H", b"ETen-B5-H"}
 
 
-def pdf_text_stdlib(path) -> tuple:
+def pdf_text_stdlib(path, cfg: dict | None = None) -> tuple:
     """
     纯标准库的 PDF 文本提取（best-effort，零依赖）。
 
@@ -504,16 +614,24 @@ def pdf_text_stdlib(path) -> tuple:
     另外支持滤镜链（/ASCII85Decode /FlateDecode，reportlab 常见）。
 
     不覆盖：加密 PDF、非 ASCII85/Flate 的滤镜、纯图片扫描件（本就要 OCR）。
+
+    性能：流解码走 `stream_reader`（缓存 + 图像流跳过 + 体量上限），
+    所以扫描件里的大图像流不会再被白白解压。
     """
+    cfg = cfg or {}
     data = Path(path).read_bytes()
     objs = _pdf_objs(data)
     if not objs:
         return "", 0
 
+    cmap_limit = max(64, int(cfg.get("cmap_probe_max_kb", 512))) * 1024
+    content_limit = max(1024, int(cfg.get("pdf_stream_max_mb", 16))) * 1024 * 1024
+    get_stream = stream_reader(objs, cmap_limit, content_limit)
+
     # 1) 收集所有 ToUnicode CMap（obj 号 → CID→字符）
     cmaps = {}
-    for num, body in objs.items():
-        raw = _decode_stream(body)
+    for num in objs:
+        raw = get_stream(num, cmap_limit)
         if raw and (b"beginbfchar" in raw or b"beginbfrange" in raw):
             cmaps[num] = _parse_tounicode(raw)
 
@@ -573,8 +691,8 @@ def pdf_text_stdlib(path) -> tuple:
 
     # 5) 遍历内容流，按操作符取文本
     chunks = []
-    for _num, body in objs.items():
-        cs = _decode_stream(body)
+    for num in objs:
+        cs = get_stream(num, content_limit)
         if not cs or (b"Tj" not in cs and b"TJ" not in cs):
             continue
         cur = None
@@ -804,10 +922,12 @@ _CRASH_CODES = {
 }
 
 
-def _ocr_images(images: list) -> str:
-    """把一组 PIL 图片丢给 OCR 子进程，返回合并文本。"""
+def _ocr_images(images: list, cfg: dict | None = None) -> str:
+    """把一组 PIL 图片丢给 OCR 子进程，返回合并文本。超时取配置的 ocr_timeout。"""
     import subprocess
     import tempfile
+
+    timeout = int((cfg or {}).get("ocr_timeout", 600) or 600)
 
     if not ocr_provider():
         raise RuntimeError("未安装 OCR 引擎。" + OCR_HINT)
@@ -822,10 +942,10 @@ def _ocr_images(images: list) -> str:
         cmd = [sys.executable, "-u", str(Path(__file__).resolve()),
                "--ocr-worker", *paths]
         try:
-            proc = subprocess.run(cmd, capture_output=True, timeout=1200,
+            proc = subprocess.run(cmd, capture_output=True, timeout=timeout,
                                   text=True, encoding="utf-8", errors="replace")
         except Exception:
-            proc = subprocess.run(cmd, capture_output=True, timeout=1200)
+            proc = subprocess.run(cmd, capture_output=True, timeout=timeout)
         payload = None
         for line in reversed((proc.stdout or "").splitlines()):
             line = line.strip()
@@ -940,7 +1060,7 @@ def text_quality(text: str) -> dict:
 
 
 # ------------------------- 3.5 统一入口 -------------------------
-def _pdf_text_views(path) -> tuple:
+def _pdf_text_views(path, cfg: dict | None = None) -> tuple:
     """
     收集所有可用的 PDF 文本视图，返回 (views, pages)，views 为 [(来源, 文本), ...]。
 
@@ -961,7 +1081,7 @@ def _pdf_text_views(path) -> tuple:
         except Exception:                                  # noqa: BLE001
             pass
     try:
-        t, p = pdf_text_stdlib(path)
+        t, p = pdf_text_stdlib(path, cfg)
         pages = max(pages, p)
         if t.strip():
             views.append(("pdf-text(stdlib)", t))
@@ -999,7 +1119,7 @@ def extract_text(path, cfg: dict) -> dict:
         return _extract_image(path, cfg, notes)
 
     # ---- PDF：先收集全部文本视图 ----
-    views, pages = _pdf_text_views(path)
+    views, pages = _pdf_text_views(path, cfg)
 
     def _ret(txt, source, quality, extra_alts):
         return {"text": txt, "alts": extra_alts, "source": source, "pages": pages,
@@ -1117,7 +1237,7 @@ def _extract_image(path, cfg, notes) -> dict:
     best, best_q = "", -1.0
     for cand in ocr_preprocess(img):
         try:
-            t = _ocr_images([cand])
+            t = _ocr_images([cand], cfg)
         except Exception as exc:                           # noqa: BLE001
             notes.append(str(exc))
             break
@@ -1177,13 +1297,57 @@ def extract_rates(one: str) -> list:
     return out
 
 
+# 这些票种票面没有「销售方名称 / 销售方税号 / 发票代码」栏位
+# （承运人信息不在购销方栏，票号本身就是 20 位数电号），
+# 因此 R01(销售方名称) / R11(缺发票代码) / R12(销售方税号缺失) 对它们不适用。
+NO_SELLER_TYPES = (
+    "电子发票(铁路电子客票)",
+    "电子发票(航空运输电子客票行程单)",
+    "电子发票(通行费)",
+)
+
+
+def _is_edigital(itype) -> bool:
+    """是否属于「全面数字化电子发票」体系（数电票及其各专用票种）。"""
+    t = str(itype or "")
+    return "数电" in t or "全电" in t or t.startswith("电子发票(")
+
+
+def _relaxed_type(itype) -> bool:
+    """是否为「无销售方栏位」的票种。"""
+    t = str(itype or "")
+    return any(k in t for k in NO_SELLER_TYPES)
+
+
 def detect_type(one: str) -> str:
-    if "数电" in one or "全电" in one:
-        return "数电发票"
+    """
+    识别票种。
+
+    判断顺序很重要（v2.1 调整两处）：
+      · 新增的三个数电票种（铁路电子客票 / 航空运输电子客票行程单 / 通行费）
+        标题里同样含「电子发票」，必须排在通用的「电子发票+普通/专用」之前，
+        否则会被降级成「电子发票(其他)」并因找不到销售方而误报异常；
+      · 通用「数电 / 全电」判断被移到专/普判断之后 —— 旧实现把它放在第一位，
+        票面备注里只要出现「数电」二字（例如红冲说明），专票就会退化成裸的
+        「数电发票」，丢掉专/普区分（已实测复现）。
+
+    只匹配**标题级**写法（如「电子发票(铁路电子客票)」），不匹配孤立的
+    「通行费 / 行程单」等词，避免把明细行或备注里的字样误判成票种。
+    """
+    if "电子发票(铁路电子客票)" in one or "铁路电子客票" in one:
+        return "电子发票(铁路电子客票)"
+    if "电子发票(航空运输电子客票行程单)" in one \
+            or "航空运输电子客票行程单" in one:
+        return "电子发票(航空运输电子客票行程单)"
+    if "通行费电子发票" in one or "电子发票(通行费)" in one \
+            or "收费公路通行费" in one:
+        return "电子发票(通行费)"
     if "电子发票" in one and "专用发票" in one:
         return "数电发票(增值税专用发票)"
     if "电子发票" in one and "普通发票" in one:
         return "数电发票(普通发票)"
+    if "数电" in one or "全电" in one:
+        return "数电发票"
     if "增值税电子专用发票" in one:
         return "电子专用发票"
     if "增值税电子普通发票" in one:
@@ -1283,29 +1447,70 @@ def _party(one: str, lines: list, who: str):
     return name, tax, ev_name, ev_tax
 
 
+# 一张新发票的起始行：必须「以票据编号标签开头」且标签后紧跟票据号数字。
+# 这一条必须严格 —— 旧实现只判 `"发票号码" in ln`，于是
+# 「备注：原发票号码 2631… 已作废」这种行也会触发切分，
+# 把一张完整发票切出一个只有备注的碎片，凭空多出一行台账（实测已复现）。
+_INV_START_RE = re.compile(r"^[（(\[【]*(?:发票号码|票据号码|发票No)[:：]?\s*\d{8,20}")
+
+
+def _looks_like_title(ln: str) -> bool:
+    return bool(re.match(r"^(电子发票|全电发票|增值税|机动车销售|二手车销售)", ln)) \
+        and "发票" in ln and "号码" not in ln and "代码" not in ln
+
+
+def _is_invoice_start(ln: str) -> bool:
+    return bool(_INV_START_RE.match(ln))
+
+
 def _split_multi_invoice(t: str) -> list:
-    """一个文件含多张发票时切段，保证"一张发票一行"。"""
+    """
+    一个文件含多张发票时切段，保证"一张发票一行"。
+
+    两层防误切（v2.1 加固）：
+      1. 切分锚点从严 —— 只有「以编号标签开头」的行才算新票开始（见 _INV_START_RE）；
+      2. 碎片回收 —— 切出来的段落若既无票据号也无金额要素，判定为备注/页脚碎片，
+         并回相邻段落，绝不单独成行。
+    """
     per_line = re.sub(r"\s+", "", t)
     hits = [m.start() for m in re.finditer(r"发票号码", per_line)]
     titles = [m.start() for m in re.finditer(r"(电子发票|全电发票|增值税)", per_line)]
     if len(hits) <= 1 and len(titles) <= 1:
         return [t]
 
-    def looks_like_title(ln: str) -> bool:
-        return bool(re.match(r"^(电子发票|全电发票|增值税|机动车销售|二手车销售)", ln)) \
-            and "发票" in ln and "号码" not in ln and "代码" not in ln
-
     segs, cur = [], []
     for ln in to_lines(t):
-        if cur and (("价税合计" in "".join(cur) or "税额" in "".join(cur))
-                    and "开票日期" in "".join(cur)) \
-                and ("发票号码" in ln or looks_like_title(ln)):
+        joined = "".join(cur)
+        if cur and (("价税合计" in joined or "税额" in joined)
+                    and "开票日期" in joined) \
+                and (_is_invoice_start(ln) or _looks_like_title(ln)):
             segs.append(cur)
             cur = []
         cur.append(ln)
     if cur:
         segs.append(cur)
+
+    segs = _merge_fragments(segs)
     return ["\n".join(s) for s in segs] if len(segs) > 1 else [t]
+
+
+def _merge_fragments(segs: list) -> list:
+    """把不含票据要素的碎片段落并回相邻段落（前导碎片并入下一段）。"""
+    merged, pending = [], []
+    for s in segs:
+        joined = "".join(s)
+        if "发票号码" not in joined and "价税合计" not in joined \
+                and "税额" not in joined:
+            pending.extend(s)                       # 碎片：先挂起
+            continue
+        merged.append(pending + list(s))
+        pending = []
+    if pending:
+        if merged:
+            merged[-1].extend(pending)
+        else:
+            merged.append(pending)
+    return merged
 
 
 def _builtin_parse(t: str, conf: dict, ev: dict) -> dict:
@@ -1353,9 +1558,23 @@ def _builtin_parse(t: str, conf: dict, ev: dict) -> dict:
         m = re.search(r"[(（]小写[)）][¥￥]?(" + MONEY_STR + r")", one)
     if not m:
         m = re.search(r"价税合计[^0-9]{0,60}(" + MONEY_STR + r")", one)
+    if not m:
+        # 铁路电子客票 / 航空行程单用「票价」而不是「价税合计」（v2.1 新增）
+        m = re.search(r"票价[^0-9¥￥]{0,40}?[¥￥]?(" + MONEY_STR + r")", one)
     if m:
         total = to_money(m.group(1))
         put("total", total, 0.92, m.group(0))
+
+    # 票面大写金额（用于 R17 与「小写」交叉勾稽）
+    m = re.search(r"价税合计[（(]大写[)）][:：]?([^0-9¥￥]{1,40}?)[（(]小写", one)
+    if not m:
+        m = re.search(r"价税合计[（(]大写[)）][:：]?([零壹贰叁肆伍陆柒捌玖〇一二三四五六七八九"
+                      r"拾佰仟万亿元角分整正]{2,40})", one)
+    if m:
+        cn_val = cn_amount_to_number(m.group(1))
+        if cn_val is not None:
+            rec["_cn_amount"] = cn_val
+            ev["_cn_amount"] = m.group(0)[:80]
 
     m = re.search(r"合计[¥￥](" + MONEY_STR + r")[¥￥](" + MONEY_STR + r")", one)
     if m:
@@ -1413,6 +1632,23 @@ def _builtin_parse(t: str, conf: dict, ev: dict) -> dict:
         m = re.search(r"开票人[:：]?([\u4e00-\u9fa5A-Za-z]{2,8})(?=收款人|复核人|$)", one)
     if m:
         put("drawer", m.group(1), 0.85, m.group(0))
+
+    # 新数电票种没有「货物或应税劳务」明细行，用「车次 / 航班 + 区间」充当
+    # 『主要项目/货物名称』，让台账这一列对它们同样有意义（v2.1 新增）。
+    if not rec.get("item_name"):
+        kind = detect_type(one)
+        if kind == "电子发票(铁路电子客票)":
+            tr = re.search(r"车次[:：]?([GDCZTKY]?\d{1,5})", one)
+            stations = re.findall(r"([\u4e00-\u9fa5]{2,8}站)", one)
+            parts = ([(tr.group(1) + "次")] if tr else [])
+            if len(stations) >= 2:
+                parts.append("→".join(stations[:2]))
+            if parts:
+                put("item_name", " ".join(parts), 0.8, "车次/区间")
+        elif kind == "电子发票(航空运输电子客票行程单)":
+            fl = re.search(r"航班号[:：]?([A-Z]{2}\d{3,4})", one)
+            if fl:
+                put("item_name", fl.group(1), 0.8, fl.group(0))
 
     return rec
 
@@ -1569,6 +1805,9 @@ PROVINCE_CODES = {
 @rule("R01", "严重", "必填字段缺失")
 def r01(ctx):
     out = []
+    # 铁路客票 / 航空行程单 / 通行费票面本就没有「销售方」栏位（承运人信息不在
+    # 购销方栏），对它们要求销售方名称只会制造必然的误报。
+    relaxed = _relaxed_type(ctx["rec"].get("invoice_type"))
     for key, label, suggest in (
         ("invoice_no", "发票号码", "确认 PDF 是否完整原件，必要时人工补录"),
         ("issue_date", "开票日期", "检查票据是否清晰、是否被裁切"),
@@ -1576,6 +1815,8 @@ def r01(ctx):
         ("seller_name", "销售方名称", "销售方名称未识别，请人工补录"),
         ("buyer_name", "购买方名称", "购买方名称未识别（个人抬头可能为空）"),
     ):
+        if relaxed and key == "seller_name":
+            continue
         if ctx["rec"].get(key) in (None, "", []):
             out.append({"level": "严重", "field": label,
                         "message": f"未识别到「{label}」", "suggest": suggest})
@@ -1597,7 +1838,7 @@ def r03(ctx):
     itype = ctx["rec"].get("invoice_type") or ""
     if not no:
         return []
-    if "数电" in itype or len(no) == 20:
+    if _is_edigital(itype) or len(no) == 20:
         if len(no) != 20:
             return [{"level": "警告", "field": "发票号码",
                      "message": f"数电发票号码应为 20 位，当前 {len(no)} 位",
@@ -1724,7 +1965,7 @@ def r10(ctx):
 @rule("R11", "警告", "非数电发票缺少发票代码")
 def r11(ctx):
     itype = ctx["rec"].get("invoice_type") or ""
-    if "数电" not in itype and not ctx["rec"].get("invoice_code") \
+    if not _is_edigital(itype) and not ctx["rec"].get("invoice_code") \
             and ctx["rec"].get("invoice_no"):
         return [{"level": "警告", "field": "发票代码",
                  "message": "未识别到发票代码（非数电发票通常应有 12 位发票代码）",
@@ -1734,6 +1975,8 @@ def r11(ctx):
 
 @rule("R12", "警告", "销售方税号缺失")
 def r12(ctx):
+    if _relaxed_type(ctx["rec"].get("invoice_type")):
+        return []           # 铁路客票 / 航空行程单 / 通行费票面无销售方税号栏位
     if not str(ctx["rec"].get("seller_tax") or "").strip():
         return [{"level": "警告", "field": "销售方税号",
                  "message": "销售方纳税人识别号缺失", "suggest": "人工补录"}]
@@ -1770,11 +2013,11 @@ def r13(ctx):
 @rule("R14", "警告", "数电发票号码结构异常")
 def r14(ctx):
     no = str(ctx["rec"].get("invoice_no") or "")
-    itype = ctx["rec"].get("invoice_type") or ""
     if len(no) != 20 or not no.isdigit():
         return []
-    if "数电" not in itype and not no.startswith("0"):
-        pass
+    # 注：旧实现此处有一行 `if "数电" not in itype and not no.startswith("0"): pass`
+    # —— 一个空分支，等于没有判断（死代码）。为不改变既有检出行为，直接删除，
+    # 规则对全部 20 位号码生效。
     out = []
     prov = no[2:4]
     if prov not in PROVINCE_CODES:
@@ -1823,6 +2066,27 @@ def r16(ctx):
     return []
 
 
+@rule("R17", "警告", "大写金额与小写金额不一致")
+def r17(ctx):
+    """
+    票面「价税合计（大写）」与「（小写）」必须相等。
+
+    这是票据里信息量最大的一条互相印证关系：大小写同时对上的概率极高，而一旦不一致
+    几乎必然是识别错误（OCR 认错字、字体映射错位、跨页丢字）。单字段校验永远抓不到
+    这类错误 —— 它既不是缺字段，也不违反任何单字段合法性。
+    """
+    cn = ctx["rec"].get("_cn_amount")
+    total = ctx["rec"].get("total")
+    if cn is None or not isinstance(total, (int, float)):
+        return []
+    if abs(float(cn) - float(total)) > float(ctx["cfg"]["balance_tolerance"]):
+        return [{"level": "警告", "field": "价税合计",
+                 "message": f"票面大写金额 {float(cn):,.2f} 与小写价税合计 "
+                            f"{float(total):,.2f} 不一致",
+                 "suggest": "大小写金额必须相等，请人工核对（多为识别错误）"}]
+    return []
+
+
 def _similarity(a: str, b: str) -> float:
     """字符级相似度（不需要第三方库）。"""
     if not a or not b:
@@ -1852,6 +2116,32 @@ def validate(rec: dict, cfg: dict, today: date | None = None) -> list:
                            "message": f"规则执行异常：{exc}",
                            "suggest": "反馈给流程维护者"})
     return issues
+
+
+# 规则给出的「涉及字段」是中文标签，置信度表用的却是英文 key。
+# 旧实现直接做字符串互含匹配（`field in k or k in field`），中文标签与英文 key
+# **永远匹配不上** —— 于是一段"严重问题 → 字段打折"的逻辑成了死代码。
+# 实测佐证：一份勾稽不平（严重）的票，其 amount/tax/total 置信度仍是
+# 0.9 / 0.9 / 0.93，一点没被压低。下面这张表把两者对上。
+FIELD_ALIAS = {
+    "发票号码": ["invoice_no"], "发票代码": ["invoice_code"],
+    "开票日期": ["issue_date"], "校验码": ["check_code"],
+    "购买方名称": ["buyer_name"], "销售方名称": ["seller_name"],
+    "购买方税号": ["buyer_tax"], "销售方税号": ["seller_tax"],
+    "税号": ["buyer_tax", "seller_tax"],
+    "价税合计": ["total"], "金额(不含税)": ["amount"], "税额": ["tax"],
+    "税率": ["tax_rate"], "税率×金额": ["amount", "tax", "tax_rate"],
+    "金额勾稽": ["amount", "tax", "total"],
+    "购销双方": ["buyer_name", "seller_name"],
+}
+
+
+def _penalty_targets(field: str, conf: dict) -> list:
+    """把规则的中文字段标签翻译成置信度表里的 key；未知标签退回子串匹配。"""
+    keys = FIELD_ALIAS.get(str(field or ""))
+    if keys:
+        return [k for k in keys if k in conf]
+    return [k for k in conf if field and (field in k or k in field)]
 
 
 def adjust_confidence(rec: dict, issues: list, cfg: dict) -> tuple:
@@ -1888,12 +2178,9 @@ def adjust_confidence(rec: dict, issues: list, cfg: dict) -> tuple:
     for i in issues:
         if i["level"] != "严重":
             continue
-        field = i["field"]
-        for k in list(conf):
-            if field and (field in k or k in field):
-                conf[k] = round(conf[k] * 0.6, 3)
-                notes.append(f"因「{field}」严重问题，{k} 置信度 ×0.6")
-                break
+        for k in _penalty_targets(i["field"], conf):
+            conf[k] = round(conf[k] * 0.6, 3)
+            notes.append(f"因「{i['field']}」严重问题，{k} 置信度 ×0.6")
 
     rec["_confidence_map"] = conf
     rec["_evidence"] = ev
@@ -2938,6 +3225,44 @@ SELFTEST_CASES = [
 税率 6%""",
         "expect_exception": "税率×金额",
     },
+    # ---- v2.1 新增用例：把这次修掉的四个缺陷固化成回归护栏 ----
+    {
+        "name": "整数金额（无小数点）-v2.1",
+        "text": """电子发票（普通发票）
+发票号码：26312000000012345678
+开票日期：2026年03月12日
+购买方信息 名称：某某科技有限公司  统一社会信用代码：91310115MA1H8WXYQ4
+销售方信息 名称：虚拟信息技术服务有限公司  统一社会信用代码：91110108MA01C2XY3P
+合计 ¥10000 ¥600
+价税合计（小写）¥10600
+税率 6%""",
+        "expect": {"amount": 10000.0, "tax": 600.0, "total": 10600.0},
+    },
+    {
+        "name": "铁路电子客票-票种识别-v2.1",
+        "text": """电子发票（铁路电子客票）
+发票号码：26312000000012345678
+开票日期：2026年03月12日
+购买方信息 名称：某某科技有限公司  统一社会信用代码：91310115MA1H8WXYQ4
+车次 G1234  北京南站 上海虹桥站
+票价 ¥106.00
+价税合计（小写）¥106.00
+税率 9%""",
+        "expect": {"invoice_type": "电子发票(铁路电子客票)", "total": 106.0},
+        "expect_no_exception": "销售方名称",
+    },
+    {
+        "name": "金额与发票号码矛盾-严重问题应压低置信度-v2.1",
+        "text": """电子发票（普通发票）
+发票号码：26312000000012345678
+开票日期：2026年03月12日
+购买方信息 名称：某某科技有限公司  统一社会信用代码：91310115MA1H8WXYQ4
+销售方信息 名称：虚拟信息技术服务有限公司  统一社会信用代码：91110108MA01C2XY3P
+合计 ¥1000.00 ¥60.00
+价税合计（小写）¥1120.00
+税率 6%""",
+        "expect_max_conf": 0.85,          # 严重问题必须把 amount/tax/total 打折
+    },
 ]
 
 
@@ -2971,6 +3296,14 @@ def selftest() -> int:
         if case.get("expect_exception"):
             if not any(case["expect_exception"] in i["field"] for i in issues):
                 problems.append(f"未命中预期问题「{case['expect_exception']}」")
+        if case.get("expect_no_exception"):
+            needle = case["expect_no_exception"]
+            if any(needle in i["field"] for i in issues):
+                problems.append(f"不该报出的问题「{needle}」被误报")
+        if case.get("expect_max_conf") is not None:
+            if conf > float(case["expect_max_conf"]):
+                problems.append(f"置信度 {conf:.3f} 高于上限 "
+                                f"{case['expect_max_conf']}（严重问题未有效压低置信度）")
 
         tag = "✓" if not problems else "✗"
         print(f"{tag} {case['name']}   置信 {conf*100:.1f}%  状态 {status}")

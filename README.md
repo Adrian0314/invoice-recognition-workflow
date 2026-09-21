@@ -13,6 +13,10 @@
 > —— 调研了 GitHub 上三类主流做法（纯 Python 模板库 / OCR+LLM 混合 / RPA+CI），
 > 逐项说明九项改进「改了什么、为什么、实测效果」，并对比两版的适用场景与优劣。
 
+> 📊 **对标评估见**：[评估与优化报告.md](评估与优化报告.md)
+> —— 与 6 个成熟开源项目逐维度对标，列出 18 项不足（含实测证据）、
+> 可量化的优化目标与分阶段路线图；记录 v2.0.0 → v2.1.0 的 11 项修复与回归验证结果。
+
 ## 快速开始（30 秒）
 
 ```bat
@@ -20,10 +24,10 @@
 python optimized_python\idle_invoice_bot.py --selftest
 
 :: 把发票放进 invoices_input\ 后处理（无需安装任何第三方包）
-python optimized_python\idle_invoice_bot.py -i invoices_input -o optimized_python\output_v2
+python optimized_python\idle_invoice_bot.py -i invoices_input -o output
 ```
 
-产出全部落在 `optimized_python/output_v2/`：台账（xlsx / CSV / JSON）、HTML 报告、待复核清单、审计轨迹。
+产出全部落在 `output/`（v1 / v2 统一目录）：台账（xlsx / CSV / JSON）、HTML 报告、待复核清单、审计轨迹。
 
 ## 已验证的识别效果
 

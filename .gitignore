@@ -12,8 +12,8 @@ venv/
 env/
 
 # ---- 运行产出（流水线与 CI 会重新生成，不入库；入库会让每次运行都产生噪声 diff）----
+# v1 / v2 统一写入 output/，不再有版本化输出目录
 output/
-output_v2/
 output_backup_*/
 output_*/
 _processed/
@@ -21,6 +21,14 @@ _failed/
 审计轨迹.jsonl
 台账索引.json
 待复核.csv
+
+# ---- 运行时收件箱（工作目录，内容随时会变，不进版本库）----
+# 规范样本在 samples/ 与 samples_intl/；invoices_input/ 是运行时的副本，
+# 由 make_*.py 或 .github/scripts/build_inbox.py 生成。
+invoices_input/
+
+# ---- 本工具的会话状态（记忆文件等，不属于交付内容）----
+.workbuddy/
 
 # ---- Office 临时锁文件（Excel/WPS 打开台账时会生成）----
 ~$*

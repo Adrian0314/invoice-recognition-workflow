@@ -21,7 +21,7 @@
     python run_and_check.py <bot.py> -- <机器人的参数...>
 例：
     python run_and_check.py optimized_python/idle_invoice_bot.py -- \
-        -i invoices_input -o optimized_python/output_v2
+        -i invoices_input -o output
 """
 from __future__ import annotations
 
