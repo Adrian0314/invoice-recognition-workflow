@@ -27,6 +27,10 @@ on:
       - "*.py"
       - "requirements.txt"
       - ".github/**"
+      - "docs/**"
+      - "samples/**"
+      - "samples_intl/**"
+      - "samples_mock/**"
   pull_request:
     branches: [main, master]
   schedule:
@@ -76,6 +80,11 @@ jobs:
 
       - name: UiPath 版 XAML 生成与转义自校验
         run: python optimized_uipath/build_xaml.py
+
+      - name: 在线版站点引用完整性（docs/ 与仓库文件的引用会不会断）
+        # docs/ 直接引用 ../optimized_python/… 与 ../samples*/…，不做副本。
+        # 一旦这些文件被改名/移动/删除，网站会静默失效 —— 这一步把它变成红灯。
+        run: python .github/scripts/assert_site.py
 
   regression:
     name: 样本回归 ${{ matrix.os }}

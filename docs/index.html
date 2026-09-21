@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>发票识别工作流 · 在线版（浏览器内运行，不上传）</title>
+<meta name="description" content="把发票 PDF 拖进来，当场识别关键字段、生成台账与异常报告。全部在浏览器本地完成，文件不上传服务器，无需安装任何软件。">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">发票</span>
+      <div>
+        <h1>发票识别工作流 · 在线版</h1>
+        <p class="sub">拖入发票 PDF → 当场识别 → 出台账与异常报告</p>
+      </div>
+    </div>
+    <div class="badges">
+      <span class="badge ok">文件不上传</span>
+      <span class="badge">零安装</span>
+      <span class="badge">离线可用<sup>*</sup></span>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <!-- ============ 运行时状态 ============ -->
+  <section class="card" id="boot-card">
+    <div class="boot-row">
+      <div class="boot-text">
+        <strong id="boot-title">正在准备识别引擎…</strong>
+        <span id="boot-detail" class="muted">首次打开需要下载约 11.6 MB 运行时，之后浏览器会缓存</span>
+      </div>
+      <div class="bar"><div class="bar-in" id="boot-bar"></div></div>
+    </div>
+  </section>
+
+  <!-- ============ 投放区 ============ -->
+  <section class="card">
+    <div id="drop" class="drop" tabindex="0" role="button" aria-label="拖入发票文件或点击选择">
+      <div class="drop-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 16V4m0 0L8 8m4-4 4 4"/><path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>
+        </svg>
+      </div>
+      <p class="drop-main">把发票拖到这里，或 <u>点击选择文件</u></p>
+      <p class="muted">支持 PDF / PNG / JPG / BMP / TIF / WEBP，可一次选多份</p>
+      <input type="file" id="file" multiple accept=".pdf,.png,.jpg,.jpeg,.bmp,.tif,.tiff,.webp" hidden>
+    </div>
+
+    <div class="actions">
+      <button id="btn-run" class="btn primary" disabled>开始识别</button>
+      <button id="btn-demo" class="btn" disabled>载入示例数据（24 份）</button>
+      <button id="btn-clear" class="btn ghost" disabled>清空</button>
+      <span id="queue-info" class="muted"></span>
+    </div>
+
+    <ul id="filelist" class="filelist" hidden></ul>
+  </section>
+
+  <!-- ============ 结果 ============ -->
+  <section class="card" id="result-card" hidden>
+    <div class="result-head">
+      <h2>识别结果</h2>
+      <span id="result-meta" class="muted"></span>
+    </div>
+
+    <div class="stats" id="stats"></div>
+
+    <div class="exports">
+      <span class="muted">导出：</span>
+      <button class="btn small" data-export="csv">明细 CSV</button>
+      <button class="btn small" data-export="issue_csv">异常记录 CSV</button>
+      <button class="btn small" data-export="review_csv">待复核 CSV</button>
+      <button class="btn small" data-export="json">明细 JSON</button>
+      <button class="btn small" data-export="audit_jsonl">审计轨迹 JSONL</button>
+      <button class="btn small accent" data-export="report_html">处理报告 HTML</button>
+      <button class="btn small" id="btn-print">打印 / 存 PDF</button>
+    </div>
+
+    <div class="tablewrap">
+      <table id="tbl">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>源文件</th>
+            <th>状态</th>
+            <th>发票号码</th>
+            <th>开票日期</th>
+            <th>销售方</th>
+            <th class="num">价税合计</th>
+            <th class="num">置信度</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <p class="muted hint">提示：点上面的汇总卡片可按状态筛选（再点一次取消）。</p>
+  </section>
+
+  <!-- ============ 日志 ============ -->
+  <section class="card" id="log-card" hidden>
+    <details>
+      <summary>运行日志</summary>
+      <pre id="log" class="log"></pre>
+    </details>
+  </section>
+
+  <!-- ============ 说明 ============ -->
+  <section class="card doc">
+    <h2>它是怎么工作的</h2>
+    <p>
+      这个页面在浏览器里通过 <strong>Pyodide</strong>（编译成 WebAssembly 的 CPython）直接运行本仓库的
+      <code>optimized_python/idle_invoice_bot.py</code> —— <strong>跑的就是仓库里那个引擎本体</strong>，
+      不是另写一份简化版。识别规则、校验规则、置信度模型、重复拦截逻辑完全一致。
+    </p>
+    <p>
+      引擎的“零依赖路径”（内置标准库 PDF 解析器）只用 Python 标准库，
+      所以能原样在 WASM 里跑；因此本页面的识别结论与本地运行
+      <code>python optimized_python/idle_invoice_bot.py -i invoices_input -o output</code> 一致。
+    </p>
+
+    <h3>本页面的能力边界</h3>
+    <table class="mini">
+      <thead><tr><th>类型</th><th>在线版</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>电子发票 PDF（有文本层）</td><td class="yes">完整支持</td><td>号码、日期、购销方、金额三项、税率、明细等都能识别</td></tr>
+        <tr><td>无文本层扫描件 PDF</td><td class="no">登记为待人工录入</td><td>需要 OCR，浏览器内没有推理引擎</td></tr>
+        <tr><td>图片发票（PNG/JPG）</td><td class="no">登记为待人工录入</td><td>同上</td></tr>
+      </tbody>
+    </table>
+    <p class="muted">
+      想要 OCR：在本地跑 <code>python optimized_python/idle_invoice_bot.py</code>，
+      并先装 <code>rapidocr</code> + <code>onnxruntime</code> + <code>PyMuPDF</code>。
+      仓库根目录的 <code>README.md</code> 与 <code>使用手册.md</code> 有完整步骤。
+    </p>
+
+    <h3>隐私</h3>
+    <p>
+      发票文件<strong>不会离开你的电脑</strong>：文件被读进浏览器的内存文件系统，
+      由本地运行的 Python 处理，页面不发任何请求上传它们。唯一的网络请求是首次加载
+      Pyodide 运行时（11.6 MB，来自公共 CDN）。
+    </p>
+    <p class="muted"><sup>*</sup> 首次加载后运行时会被浏览器缓存；在离线状态下重新打开通常仍可用，取决于浏览器缓存策略。</p>
+  </section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span>发票识别工作流 · 在线版</span>
+    <span class="sep">·</span>
+    <a href="https://github.com/Adrian0314/invoice-recognition-workflow" target="_blank" rel="noopener">GitHub 仓库</a>
+    <span class="sep">·</span>
+    <a href="../README.md" target="_blank" rel="noopener">项目说明</a>
+    <span class="sep">·</span>
+    <a href="../优化说明与方案对比.md" target="_blank" rel="noopener">优化说明与方案对比</a>
+  </div>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/pyodide/v0.28.3/full/pyodide.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

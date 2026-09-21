@@ -22,13 +22,11 @@ _failed/
 台账索引.json
 待复核.csv
 
-# ---- 运行时收件箱（工作目录，内容随时会变）----
-# 规范样本在 samples/ 与 samples_intl/；invoices_input/ 只是它们的运行时副本，
-# 由 make_*.py 或 .github/scripts/build_inbox.py 生成。
-# 本规则只拦**新增**文件（临时丢进来的图片、网页抓取残留等）；
-# 已跟踪的 24 份样本副本仍保留在库里（内容与 samples/ 一致，CI 与本地都能直接用）。
-# 若想让它彻底变成纯运行时目录：
-#     git rm -r --cached invoices_input && git commit -m "chore: 收件箱改为纯运行时目录"
+# ---- 运行时收件箱（纯工作目录，不进版本库）----
+# 规范样本在 samples/ 、samples_intl/ 、samples_mock/；
+# invoices_input/ 只是它们的运行时副本，由下面这条命令铺出来：
+#     python .github/scripts/build_inbox.py invoices_input
+# 丢掉它不会丢任何东西 —— CI 的 regression / scheduled-run 两个 job 都会先跑这条命令。
 invoices_input/
 
 # ---- 本工具的会话状态（记忆文件等，不属于交付内容）----

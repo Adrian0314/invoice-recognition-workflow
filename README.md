@@ -9,6 +9,20 @@
 | **UiPath 工作流版** | [`optimized_uipath/`](optimized_uipath/) | 生产级运行治理、人工回环、多机器人扩容 |
 | 原方案（v1） | [`invoice_wf/`](invoice_wf/) + `main.py` / `watch.py` | 本 README 下半部分即 v1 的设计记录 |
 
+## 🌐 在线版：浏览器里直接跑，不装任何东西
+
+**👉 <https://adrian0314.github.io/invoice-recognition-workflow/>**
+
+打开就能用：把发票 PDF 拖进去，当场识别并出台账与报告。
+识别在**你自己电脑的浏览器里**完成（Pyodide + WebAssembly 运行本仓库的引擎本体），
+**文件不会上传到任何服务器**。
+
+- 站点源码在 [`docs/`](docs/)，由 GitHub Pages 托管
+- 它**直接加载** `optimized_python/idle_invoice_bot.py`，不是另写的简化版 ——
+  因此识别结论与本地运行逐项一致（已用 24 份样本核对：31 行 / 正常 27 / 异常 1 / 提示 1 / 重复 3 / 待人工 2 / 价税合计 695,976.08）
+- 边界：浏览器内没有 OCR 推理引擎，扫描件与图片会登记为「待人工录入」；
+  需要 OCR 就用下面的本地版
+
 > 📖 **建议先读**：[优化说明与方案对比.md](优化说明与方案对比.md)
 > —— 调研了 GitHub 上三类主流做法（纯 Python 模板库 / OCR+LLM 混合 / RPA+CI），
 > 逐项说明九项改进「改了什么、为什么、实测效果」，并对比两版的适用场景与优劣。
@@ -23,9 +37,15 @@
 :: 零依赖自检：不读任何文件、不装任何第三方包
 python optimized_python\idle_invoice_bot.py --selftest
 
-:: 把发票放进 invoices_input\ 后处理（无需安装任何第三方包）
+:: 准备一份示例数据（把仓库里的样本拷进收件箱；无需任何第三方包）
+python .github\scripts\build_inbox.py invoices_input
+
+:: 处理（同样无需安装任何第三方包）
 python optimized_python\idle_invoice_bot.py -i invoices_input -o output
 ```
+
+`invoices_input/` 是**运行时收件箱**（不进版本库）——放你自己的发票进去，
+或先用上面那条命令铺一份示例数据。规范样本在 `samples/`、`samples_intl/`、`samples_mock/`。
 
 产出全部落在 `output/`（v1 / v2 统一目录）：台账（xlsx / CSV / JSON）、HTML 报告、待复核清单、审计轨迹。
 
