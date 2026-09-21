@@ -28,6 +28,8 @@ on:
       - "requirements.txt"
       - ".github/**"
       - "docs/**"
+      - "index.html"
+      - ".nojekyll"
       - "samples/**"
       - "samples_intl/**"
       - "samples_mock/**"

@@ -91,6 +91,18 @@ check('src="app.js"' in html, "index.html 引用 app.js", "index.html 没有引�
 check("cdn.jsdelivr.net/pyodide/" in html, "index.html 含 Pyodide CDN 脚本",
       "index.html 里找不到 Pyodide CDN 脚本（网站将无法启动）")
 
+# ---------- 5) 站点入口（仓库根） ----------
+# Pages 必须从仓库根发布，网站才能引用 ../optimized_python/ 与 ../samples/；
+# 根 index.html 负责把入口跳转到 docs/，.nojekyll 负责关掉 Jekyll 处理。
+root_index = ROOT / "index.html"
+check(root_index.is_file(), "根 index.html 存在（站点入口）", "缺少根 index.html：入口地址会 404")
+if root_index.is_file():
+    ri = root_index.read_text(encoding="utf-8")
+    check("docs/" in ri, "根 index.html 跳向 docs/", "根 index.html 里找不到到 docs/ 的跳转")
+
+check((ROOT / ".nojekyll").is_file(), ".nojekyll 存在（关闭 Jekyll，原样服务文件）",
+      "缺少 .nojekyll：Jekyll 会过滤/转换文件，且默认排除下划线开头的资源")
+
 # ---------- 输出 ----------
 print("docs/ 站点完整性检查：")
 for line in ok:
